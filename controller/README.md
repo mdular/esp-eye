@@ -1,6 +1,6 @@
-# ESP Eye
+# ESP Eye Controller
 
-The plan is to create a controller (and possibly remote) for the eye.
+This is the softare for an ESP32-based controller for the eye
 
 
 ## Setup

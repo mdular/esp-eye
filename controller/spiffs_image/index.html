@@ -2,10 +2,107 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Hello World</title>
+    <title>ESP Eye Controller</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .counter-display {
+            font-size: 24px;
+            margin: 20px 0;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button.disconnect {
+            background-color: #f44336;
+        }
+        button.disconnect:hover {
+            background-color: #d32f2f;
+        }
+        .connection-status {
+            margin-top: 10px;
+            font-weight: bold;
+        }
+    </style>
 </head>
 <body>
-    <h1>Hello, World!</h1>
-    <p>This is served from ESP32 HTTP server.</p>
+    <h1>ESP Eye Controller</h1>
+    <p>Counter value from the ESP32:</p>
+    
+    <div class="counter-display" id="counter">Waiting for connection...</div>
+    
+    <button id="ws-button" onclick="toggleConnection()">Connect</button>
+    
+    <div class="connection-status" id="status">Disconnected</div>
+
+    <script>
+        let socket;
+        let isConnected = false;
+
+        function toggleConnection() {
+            if (isConnected) {
+                disconnectWebSocket();
+            } else {
+                connectWebSocket();
+            }
+        }
+
+        function connectWebSocket() {
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+            
+            socket = new WebSocket(wsUrl);
+            
+            socket.onopen = function() {
+                isConnected = true;
+                document.getElementById('status').innerText = 'Connected';
+                document.getElementById('ws-button').innerText = 'Disconnect';
+                document.getElementById('ws-button').classList.add('disconnect');
+            };
+            
+            socket.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                if (data.counter !== undefined) {
+                    document.getElementById('counter').innerText = `Counter: ${data.counter}`;
+                }
+            };
+            
+            socket.onclose = function() {
+                disconnectWebSocket();
+            };
+            
+            socket.onerror = function(error) {
+                console.error('WebSocket Error:', error);
+                disconnectWebSocket();
+            };
+        }
+        
+        function disconnectWebSocket() {
+            if (socket) {
+                socket.close();
+            }
+            isConnected = false;
+            document.getElementById('status').innerText = 'Disconnected';
+            document.getElementById('ws-button').innerText = 'Connect';
+            document.getElementById('ws-button').classList.remove('disconnect');
+            document.getElementById('counter').innerText = 'Waiting for connection...';
+        }
+    </script>
 </body>
 </html>
