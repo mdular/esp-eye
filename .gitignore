@@ -1,3 +1,19 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+__MACOSX/
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
 # Ignore build artifacts, secrets, and editor configs
 build/
 controller/build/
@@ -5,5 +21,5 @@ controller/sdkconfig
 controller/sdkconfig.old
 controller/main/wifi_secrets.conf
 controller/main/wifi_secrets.h
-.vscode/
-.devcontainer/
+.vscode
+.devcontainer
