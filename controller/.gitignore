@@ -4,3 +4,5 @@ sdkconfig.old
 # WiFi secrets (do not commit)
 wifi_secrets.conf
 wifi_secrets.h
+.vscode/
+.devcontainer/
