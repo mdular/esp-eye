@@ -1,0 +1,9 @@
+# Ignore build artifacts, secrets, and editor configs
+build/
+controller/build/
+controller/sdkconfig
+controller/sdkconfig.old
+controller/main/wifi_secrets.conf
+controller/main/wifi_secrets.h
+.vscode/
+.devcontainer/
