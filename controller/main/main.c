@@ -6,6 +6,9 @@
 #include "http_server.h"
 #include "esp_event.h"
 #include "esp_spiffs.h"
+#include "esp_system.h"
+#include "esp_pm.h"
+#include "esp_sleep.h"
 
 // Data update manager function prototype
 typedef void (*data_update_callback_t)(int counter);
@@ -26,6 +29,8 @@ void update_counter_data(int counter) {
 
 void counter_loop(void) {
     int counter = 0;
+    const TickType_t delay_time = 1000 / portTICK_PERIOD_MS;
+    
     while (1) {
         printf("Counter: %d\n", counter);
         
@@ -34,7 +39,9 @@ void counter_loop(void) {
         
         // Increment counter
         counter++;
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        
+        // Give more time for the system to stabilize
+        vTaskDelay(delay_time);
     }
 }
 
@@ -46,6 +53,24 @@ void app_main(void)
         nvs_flash_erase();
         nvs_flash_init();
     }
+    
+    // Configure brownout detector - increase threshold to avoid false triggers
+    // This requires sdkconfig.h to have CONFIG_ESP_BROWNOUT_DET enabled
+    // Use esp_brownout_disable() if you want to disable it completely
+    // esp_brownout_set_threshold(3); // Set to a higher threshold (default is usually around 2.7V)
+    
+    // Set CPU frequency to a moderate level to reduce power consumption
+    // esp_pm_config_esp32_t pm_config = {
+    //     .max_freq_mhz = 160,
+    //     .min_freq_mhz = 80,
+    //     .light_sleep_enable = false
+    // };
+    // esp_pm_configure(&pm_config);
+    
+    // Delay to stabilize power at startup
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    
+    printf("[System] ESP32 initialized\n");
 
     // Mount SPIFFS
     esp_vfs_spiffs_conf_t conf = {

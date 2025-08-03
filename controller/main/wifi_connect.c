@@ -54,6 +54,16 @@ void wifi_init_sta(void) {
     };
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config);
+    
+    // Configure WiFi with power-saving features
+    // Set WiFi power save mode
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    
+    // Set the output power level (lower power to reduce current draw)
+    // Range is 8-84, which maps to power levels from 2dBm to 20dBm
+    // Lower value = less power consumption but shorter range
+    esp_wifi_set_max_tx_power(52); // Around 12dBm, moderate power level
+    
     esp_wifi_start();
-    printf("[WiFi] wifi_init_sta finished.\n");
+    printf("[WiFi] wifi_init_sta finished with power-saving settings\n");
 }
