@@ -9,6 +9,13 @@ The plan is to create a controller (and possibly remote) for the eye.
 - configure dev env for dev board
 
 
+## Development
+
+- due to ESP-IDF expecting project config to be in root folder, be sure to work from 'controller/' dir as root folder (file -> open folder)
+- or use file -> add folder to workspace -> add `controller/`, then select `controller/` as active ESP-IDF folder (toolbar bottom left)
+
+
+
 ## Usage
 
     idf.py build

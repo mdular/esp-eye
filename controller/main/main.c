@@ -48,7 +48,7 @@ void app_main(void)
     }
 
     printf("[WiFi] Initializing WiFi...\n");
-    wifi_init_sta("YOUR_WIFI_SSID", "YOUR_WIFI_PASSWORD");
+    wifi_init_sta();
 
     // Wait for WiFi connection before starting HTTP server
     // In production, use event group or callback to wait for connection
