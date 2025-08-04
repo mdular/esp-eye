@@ -84,7 +84,7 @@ Based on the [AI guidelines](/docs/rules/ai_guidelines.md) and [architecture doc
    - Add status reporting
 
 2. **Web UI:**
-   - Enhance HTML/JS interface for sphere visualization
+   - Enhance HTML/JS interface for crosshair visualization
    - Add controls for manual positioning and calibration
 
 ## 3. Coding Standard Adoption

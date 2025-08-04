@@ -89,9 +89,106 @@ esp_err_t mpu6050_get_raw(i2c_port_t i2c_num, mpu_data_t *data) {
     return ESP_OK;
 }
 
+#define MADGWICK_BETA 0.1f // Filter gain
+#define SAMPLE_FREQ 200.0f // 200Hz sample rate
+
+// Current quaternion state
+static quaternion_t current_q = {1.0f, 0.0f, 0.0f, 0.0f}; // Initialize with identity quaternion
+static float invSampleFreq = 1.0f / SAMPLE_FREQ;
+
+// Helper functions for Madgwick filter
+static float invSqrt(float x) {
+    float halfx = 0.5f * x;
+    float y = x;
+    long i = *(long*)&y;
+    i = 0x5f3759df - (i>>1);
+    y = *(float*)&i;
+    y = y * (1.5f - (halfx * y * y));
+    return y;
+}
+
 quaternion_t madgwick_update(const mpu_data_t *raw) {
-    // Simplified implementation - just returns identity quaternion
-    // Full Madgwick filter implementation will be added later
-    quaternion_t q = {1.0f, 0.0f, 0.0f, 0.0f};
-    return q;
+    float gx, gy, gz, ax, ay, az;
+    float q0 = current_q.q0, q1 = current_q.q1, q2 = current_q.q2, q3 = current_q.q3;
+    float recipNorm;
+    float s0, s1, s2, s3;
+    float qDot1, qDot2, qDot3, qDot4;
+    float _2q0, _2q1, _2q2, _2q3, _4q0, _4q1, _4q2, _8q1, _8q2, q0q0, q1q1, q2q2, q3q3;
+
+    // Convert gyroscope readings to rad/s
+    gx = raw->gyro_x * 0.00026646f; // 250dps full scale range / 32768 (16-bit)
+    gy = raw->gyro_y * 0.00026646f;
+    gz = raw->gyro_z * 0.00026646f;
+
+    // Convert accelerometer readings to normalized values
+    ax = raw->accel_x;
+    ay = raw->accel_y;
+    az = raw->accel_z;
+
+    // Normalize accelerometer values
+    recipNorm = invSqrt(ax * ax + ay * ay + az * az);
+    ax *= recipNorm;
+    ay *= recipNorm;
+    az *= recipNorm;
+
+    // Auxiliary variables to avoid repeated calculations
+    _2q0 = 2.0f * q0;
+    _2q1 = 2.0f * q1;
+    _2q2 = 2.0f * q2;
+    _2q3 = 2.0f * q3;
+    _4q0 = 4.0f * q0;
+    _4q1 = 4.0f * q1;
+    _4q2 = 4.0f * q2;
+    _8q1 = 8.0f * q1;
+    _8q2 = 8.0f * q2;
+    q0q0 = q0 * q0;
+    q1q1 = q1 * q1;
+    q2q2 = q2 * q2;
+    q3q3 = q3 * q3;
+
+    // Gradient decent algorithm corrective step
+    s0 = _4q0 * q2q2 + _2q2 * ax + _4q0 * q1q1 - _2q1 * ay;
+    s1 = _4q1 * q3q3 - _2q3 * ax + 4.0f * q0q0 * q1 - _2q0 * ay - _4q1 + _8q1 * q1q1 + _8q1 * q2q2 + _4q1 * az;
+    s2 = 4.0f * q0q0 * q2 + _2q0 * ax + _4q2 * q3q3 - _2q3 * ay - _4q2 + _8q2 * q1q1 + _8q2 * q2q2 + _4q2 * az;
+    s3 = 4.0f * q1q1 * q3 - _2q1 * ax + 4.0f * q2q2 * q3 - _2q2 * ay;
+    
+    // Normalize step magnitude
+    recipNorm = invSqrt(s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3);
+    s0 *= recipNorm;
+    s1 *= recipNorm;
+    s2 *= recipNorm;
+    s3 *= recipNorm;
+
+    // Rate of change of quaternion from gyroscope
+    qDot1 = 0.5f * (-q1 * gx - q2 * gy - q3 * gz);
+    qDot2 = 0.5f * (q0 * gx + q2 * gz - q3 * gy);
+    qDot3 = 0.5f * (q0 * gy - q1 * gz + q3 * gx);
+    qDot4 = 0.5f * (q0 * gz + q1 * gy - q2 * gx);
+
+    // Apply feedback step
+    qDot1 -= MADGWICK_BETA * s0;
+    qDot2 -= MADGWICK_BETA * s1;
+    qDot3 -= MADGWICK_BETA * s2;
+    qDot4 -= MADGWICK_BETA * s3;
+
+    // Integrate to yield quaternion
+    q0 += qDot1 * invSampleFreq;
+    q1 += qDot2 * invSampleFreq;
+    q2 += qDot3 * invSampleFreq;
+    q3 += qDot4 * invSampleFreq;
+
+    // Normalize quaternion
+    recipNorm = invSqrt(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
+    q0 *= recipNorm;
+    q1 *= recipNorm;
+    q2 *= recipNorm;
+    q3 *= recipNorm;
+
+    // Update stored quaternion
+    current_q.q0 = q0;
+    current_q.q1 = q1;
+    current_q.q2 = q2;
+    current_q.q3 = q3;
+
+    return current_q;
 }

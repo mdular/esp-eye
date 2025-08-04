@@ -56,6 +56,14 @@ quaternion_t controller_get_orientation(void);
 esp_err_t controller_get_telemetry(telemetry_data_t *data);
 
 /**
+ * @brief Update internal telemetry data
+ * 
+ * @param data Pointer to new telemetry data
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t controller_update_telemetry(const telemetry_data_t *data);
+
+/**
  * @brief Register a callback for telemetry data
  * 
  * @param callback Function to call when new telemetry data is available

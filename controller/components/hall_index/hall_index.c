@@ -13,6 +13,10 @@ static const char *TAG = "hall_index";
 static QueueHandle_t hall_queue = NULL;
 static int hall_gpio_pin = -1;
 
+// Static queue buffer and storage
+static StaticQueue_t hall_queue_buffer;
+static uint8_t hall_queue_storage[10 * sizeof(hall_event_t)];
+
 // ISR handler
 static void IRAM_ATTR hall_isr_handler(void* arg) {
     uint64_t timestamp = esp_timer_get_time();
@@ -27,8 +31,8 @@ esp_err_t hall_index_init(int gpio_pin) {
     
     hall_gpio_pin = gpio_pin;
     
-    // Create event queue
-    hall_queue = xQueueCreate(10, sizeof(hall_event_t));
+    // Create event queue using static allocation
+    hall_queue = xQueueCreateStatic(10, sizeof(hall_event_t), hall_queue_storage, &hall_queue_buffer);
     if (hall_queue == NULL) {
         ESP_LOGE(TAG, "Failed to create hall event queue");
         return ESP_FAIL;
