@@ -10,6 +10,14 @@
             margin: 0 auto;
             padding: 20px;
         }
+        .data-display {
+            font-size: 18px;
+            margin: 20px 0;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+        }
         .counter-display {
             font-size: 24px;
             margin: 20px 0;
@@ -39,31 +47,65 @@
             margin-top: 10px;
             font-weight: bold;
         }
+        #visualization {
+            width: 300px;
+            height: 300px;
+            border: 1px solid #ccc;
+            margin: 20px 0;
+            position: relative;
+        }
+        .sphere {
+            position: absolute;
+            width: 50px;
+            height: 50px;
+            background-color: #4CAF50;
+            border-radius: 50%;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
     </style>
 </head>
 <body>
     <h1>ESP Eye Controller</h1>
-    <p>Counter value from the ESP32:</p>
     
-    <div class="counter-display" id="counter">Waiting for connection...</div>
-    
+    <div class="connection-status" id="connection-status">Disconnected</div>
     <button id="ws-button" onclick="toggleConnection()">Connect</button>
     
-    <div class="connection-status" id="status">Disconnected</div>
-
+    <h2>Telemetry Data</h2>
+    <div class="counter-display" id="counter">-</div>
+    
+    <div class="data-display">
+        <div>Status: <span id="status">-</span></div>
+        <div>Orientation (q): <span id="orientation">-</span></div>
+        <div>Pitch: <span id="pitch">-</span>°</div>
+        <div>Roll: <span id="roll">-</span>°</div>
+        <div>Yaw: <span id="yaw">-</span>°</div>
+        <div>Motors: <span id="motors">-</span></div>
+    </div>
+    
+    <h2>Visualization</h2>
+    <div id="visualization">
+        <div class="sphere" id="sphere"></div>
+    </div>
+    
     <script>
         let socket;
         let isConnected = false;
-
+        let reconnectAttempts = 0;
+        let reconnectTimeout = null;
+        let manualDisconnect = false;
+        
         function toggleConnection() {
             if (isConnected) {
-                disconnectWebSocket();
+                disconnect(true); // true indicates manual disconnect
             } else {
-                connectWebSocket();
+                manualDisconnect = false; // Reset manual disconnect flag
+                connect();
             }
         }
-
-        function connectWebSocket() {
+        
+        function connect() {
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
             
@@ -71,38 +113,104 @@
             
             socket.onopen = function() {
                 isConnected = true;
-                document.getElementById('status').innerText = 'Connected';
-                document.getElementById('ws-button').innerText = 'Disconnect';
-                document.getElementById('ws-button').classList.add('disconnect');
+                reconnectAttempts = 0; // Reset reconnect attempts on successful connection
+                document.getElementById('connection-status').textContent = 'Connected';
+                document.getElementById('ws-button').textContent = 'Disconnect';
+                document.getElementById('ws-button').className = 'disconnect';
+                console.log('WebSocket connection established');
             };
             
             socket.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                if (data.counter !== undefined) {
-                    document.getElementById('counter').innerText = `Counter: ${data.counter}`;
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'telemetry') {
+                        updateTelemetry(data.data);
+                    }
+                } catch (e) {
+                    console.error('Error parsing message:', e);
                 }
             };
             
             socket.onclose = function() {
-                disconnectWebSocket();
+                isConnected = false;
+                document.getElementById('connection-status').textContent = 'Disconnected';
+                document.getElementById('ws-button').textContent = 'Connect';
+                document.getElementById('ws-button').className = '';
+                console.log('WebSocket connection closed');
+                
+                // Only auto-reconnect if not manually disconnected
+                if (!manualDisconnect && reconnectAttempts < 5) {
+                    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                    document.getElementById('connection-status').textContent = `Reconnecting in ${delay/1000}s...`;
+                    clearTimeout(reconnectTimeout);
+                    reconnectTimeout = setTimeout(function() {
+                        reconnectAttempts++;
+                        connect();
+                    }, delay);
+                }
             };
             
             socket.onerror = function(error) {
-                console.error('WebSocket Error:', error);
-                disconnectWebSocket();
+                console.error('WebSocket error:', error);
             };
         }
         
-        function disconnectWebSocket() {
+        function disconnect(manual = false) {
             if (socket) {
+                manualDisconnect = manual; // Set the manual disconnect flag
                 socket.close();
+                clearTimeout(reconnectTimeout); // Clear any pending reconnection
+                reconnectAttempts = 0; // Reset reconnect attempts
+                
+                if (manual) {
+                    document.getElementById('connection-status').textContent = 'Manually Disconnected';
+                }
             }
-            isConnected = false;
-            document.getElementById('status').innerText = 'Disconnected';
-            document.getElementById('ws-button').innerText = 'Connect';
-            document.getElementById('ws-button').classList.remove('disconnect');
-            document.getElementById('counter').innerText = 'Waiting for connection...';
         }
+        
+        function updateTelemetry(data) {
+            // Update counter
+            document.getElementById('counter').textContent = data.counter;
+            
+            // Update orientation data
+            document.getElementById('orientation').textContent = 
+                `[${data.q[0].toFixed(2)}, ${data.q[1].toFixed(2)}, ${data.q[2].toFixed(2)}, ${data.q[3].toFixed(2)}]`;
+            
+            // Update angles
+            document.getElementById('pitch').textContent = data.pitch.toFixed(2);
+            document.getElementById('roll').textContent = data.roll.toFixed(2);
+            document.getElementById('yaw').textContent = data.yaw.toFixed(2);
+            
+            // Update motor outputs
+            document.getElementById('motors').textContent = 
+                `M1: ${data.m1.toFixed(2)}, M2: ${data.m2.toFixed(2)}`;
+                
+            // Update status
+            const statusLabels = ["IDLE", "RUNNING", "ERROR", "CALIBRATING"];
+            document.getElementById('status').textContent = statusLabels[data.status] || "UNKNOWN";
+            
+            // Simple visualization
+            updateVisualization(data);
+        }
+        
+        function updateVisualization(data) {
+            // Simple visualization based on counter
+            const sphere = document.getElementById('sphere');
+            const angle = (data.counter % 360) * (Math.PI / 180);
+            
+            // Move the sphere in a circle
+            const radius = 100;
+            const x = Math.cos(angle) * radius;
+            const y = Math.sin(angle) * radius;
+            
+            sphere.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
+        }
+        
+        // Auto-connect on page load
+        window.onload = function() {
+            manualDisconnect = false; // Reset the flag on page load
+            connect();
+        };
     </script>
 </body>
 </html>
