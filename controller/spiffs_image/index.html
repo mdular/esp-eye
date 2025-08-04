@@ -53,16 +53,64 @@
             border: 1px solid #ccc;
             margin: 20px 0;
             position: relative;
+            background-color: #f5f5f5;
         }
-        .sphere {
+        .indicator-dot {
             position: absolute;
-            width: 50px;
-            height: 50px;
+            width: 12px;
+            height: 12px;
             background-color: #4CAF50;
             border-radius: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 5px rgba(0,0,0,0.3);
+        }
+        .axis-line {
+            position: absolute;
+            background-color: #ddd;
+        }
+        .horizontal-line {
+            width: 100%;
+            height: 1px;
+            top: 50%;
+            left: 0;
+        }
+        .vertical-line {
+            width: 1px;
+            height: 100%;
+            top: 0;
+            left: 50%;
+        }
+        .axis-label {
+            position: absolute;
+            font-size: 12px;
+            color: #666;
+        }
+        .pitch-label-pos {
+            top: 5px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        .pitch-label-neg {
+            bottom: 5px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        .yaw-label-pos {
+            top: 50%;
+            right: 5px;
+            transform: translateY(-50%);
+        }
+        .yaw-label-neg {
+            top: 50%;
+            left: 5px;
+            transform: translateY(-50%);
+        }
+        .center-label {
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
+            font-size: 10px;
+            color: #999;
         }
     </style>
 </head>
@@ -84,9 +132,21 @@
         <div>Motors: <span id="motors">-</span></div>
     </div>
     
-    <h2>Visualization</h2>
+    <h2>Orientation Visualization</h2>
     <div id="visualization">
-        <div class="sphere" id="sphere"></div>
+        <!-- Axis lines -->
+        <div class="axis-line horizontal-line"></div>
+        <div class="axis-line vertical-line"></div>
+        
+        <!-- Axis labels -->
+        <div class="axis-label pitch-label-pos">+90° Pitch</div>
+        <div class="axis-label pitch-label-neg">-90° Pitch</div>
+        <div class="axis-label yaw-label-pos">+180° Yaw</div>
+        <div class="axis-label yaw-label-neg">-180° Yaw</div>
+        <div class="axis-label center-label">0°</div>
+        
+        <!-- Position indicator -->
+        <div class="indicator-dot" id="position-indicator"></div>
     </div>
     
     <script>
@@ -194,16 +254,32 @@
         }
         
         function updateVisualization(data) {
-            // Simple visualization based on counter
-            const sphere = document.getElementById('sphere');
-            const angle = (data.counter % 360) * (Math.PI / 180);
+            // Get the position indicator element
+            const indicator = document.getElementById('position-indicator');
+            const container = document.getElementById('visualization');
             
-            // Move the sphere in a circle
-            const radius = 100;
-            const x = Math.cos(angle) * radius;
-            const y = Math.sin(angle) * radius;
+            // Get container dimensions
+            const width = container.offsetWidth;
+            const height = container.offsetHeight;
             
-            sphere.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
+            // Map pitch from -90 to +90 degrees to Y position (top to bottom)
+            // Pitch is clamped between -90 and 90 degrees
+            const pitchDegrees = Math.max(-90, Math.min(90, data.pitch));
+            const pitchPosition = height * (0.5 - (pitchDegrees / 180)); // Map to y position
+            
+            // Map yaw from -180 to +180 degrees to X position (left to right)
+            // Make sure yaw is between -180 and 180
+            let yawDegrees = data.yaw;
+            while (yawDegrees > 180) yawDegrees -= 360;
+            while (yawDegrees < -180) yawDegrees += 360;
+            const yawPosition = width * ((yawDegrees + 180) / 360); // Map to x position
+            
+            // Update the indicator position
+            indicator.style.left = yawPosition + 'px';
+            indicator.style.top = pitchPosition + 'px';
+            
+            // Optional: Add a tooltip with exact values
+            indicator.title = `Pitch: ${data.pitch.toFixed(1)}°, Yaw: ${yawDegrees.toFixed(1)}°`;
         }
         
         // Auto-connect on page load
