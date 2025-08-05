@@ -112,6 +112,23 @@
             font-size: 10px;
             color: #999;
         }
+        .error-display {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 4px;
+            background-color: #ffebee;
+            border: 1px solid #f44336;
+            color: #d32f2f;
+        }
+        .error-display h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+        }
+        #error-message {
+            font-family: monospace;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
     </style>
 </head>
 <body>
@@ -130,6 +147,12 @@
         <div>Roll: <span id="roll">-</span>°</div>
         <div>Yaw: <span id="yaw">-</span>°</div>
         <div>Motors: <span id="motors">-</span></div>
+    </div>
+    
+    <!-- Error message display area - always shown -->
+    <div id="error-container" class="error-display">
+        <h3>System Log</h3>
+        <div id="error-message">No errors reported</div>
     </div>
     
     <h2>Orientation Visualization</h2>
@@ -185,6 +208,8 @@
                     const data = JSON.parse(event.data);
                     if (data.type === 'telemetry') {
                         updateTelemetry(data.data);
+                    } else if (data.type === 'log') {
+                        updateLog(data.data);
                     }
                 } catch (e) {
                     console.error('Error parsing message:', e);
@@ -251,6 +276,18 @@
             
             // Simple visualization
             updateVisualization(data);
+        }
+        
+        function updateLog(data) {
+            const errorMessage = document.getElementById('error-message');
+            // Format: [LEVEL] [timestamp] source: message\n
+            const timestamp = new Date(data.timestamp).toLocaleTimeString();
+            const logLine = `[${data.level}] [${timestamp}] ${data.source}: ${data.message}\n`;
+            if (errorMessage.textContent === 'No errors reported') {
+                errorMessage.textContent = logLine;
+            } else {
+                errorMessage.textContent += logLine;
+            }
         }
         
         function updateVisualization(data) {

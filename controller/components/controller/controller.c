@@ -16,29 +16,24 @@ static const char *TAG = "controller";
 #define IMU_TASK_STACK_SIZE 3072
 #define CONTROL_TASK_STACK_SIZE 3072
 #define MOTOR_TASK_STACK_SIZE 3072
-#define LOGGING_TASK_STACK_SIZE 2048
 
 #define IMU_TASK_PRIORITY 6
 #define CONTROL_TASK_PRIORITY 6
 #define MOTOR_TASK_PRIORITY 5
-#define LOGGING_TASK_PRIORITY 2
 
 // Core assignments
 #define IMU_TASK_CORE 0        // Real-time core
 #define CONTROL_TASK_CORE 0     // Real-time core
 #define MOTOR_TASK_CORE 0       // Real-time core
-#define LOGGING_TASK_CORE 0     // Real-time core
 
 // Task handles
 static TaskHandle_t imu_task_handle = NULL;
 static TaskHandle_t control_task_handle = NULL;
 static TaskHandle_t motor_task_handle = NULL;
-static TaskHandle_t logging_task_handle = NULL;
 
 // Queue handles
 static QueueHandle_t imu_queue = NULL;
 static QueueHandle_t control_queue = NULL;
-static QueueHandle_t logging_queue = NULL;
 
 // Static queue buffers and storage areas
 static StaticQueue_t imu_queue_buffer;
@@ -47,9 +42,6 @@ static uint8_t imu_queue_storage[sizeof(mpu_data_t)];
 static StaticQueue_t control_queue_buffer;
 static uint8_t control_queue_storage[sizeof(float) * 2];
 
-static StaticQueue_t logging_queue_buffer;
-static uint8_t logging_queue_storage[10 * sizeof(char *)];
-
 // Counter for testing
 static uint32_t counter = 0;
 
@@ -57,13 +49,23 @@ static uint32_t counter = 0;
 static controller_telemetry_cb_t telemetry_callback = NULL;
 
 // Global telemetry data storage
-static telemetry_data_t global_telemetry = {0};
+static telemetry_data_t global_telemetry = {
+    .roll = 0.0f,
+    .pitch = 0.0f,
+    .yaw = 0.0f,
+    .last_hall_pulse_us = 0,
+    .motor1_speed = 0.0f,
+    .motor2_speed = 0.0f,
+    .counter = 0
+};
 
 // Task prototypes
 static void imu_task(void *pvParameters);
 static void control_task(void *pvParameters);
 static void motor_task(void *pvParameters);
-static void logging_task(void *pvParameters);
+
+// Helper function prototypes
+esp_err_t i2c_master_init(void);
 
 esp_err_t controller_init(void) {
     // Create queues for inter-task communication using static allocation
@@ -72,52 +74,65 @@ esp_err_t controller_init(void) {
         ESP_LOGE(TAG, "Failed to create imu_queue");
         return ESP_FAIL;
     }
-    
+
     control_queue = xQueueCreateStatic(1, sizeof(float) * 2, control_queue_storage, &control_queue_buffer);
     if (control_queue == NULL) {
         ESP_LOGE(TAG, "Failed to create control_queue");
         return ESP_FAIL;
     }
-    
-    logging_queue = xQueueCreateStatic(10, sizeof(char *), logging_queue_storage, &logging_queue_buffer);
-    if (logging_queue == NULL) {
-        ESP_LOGE(TAG, "Failed to create logging_queue");
-        return ESP_FAIL;
-    }
-    
+
+    // Suppress repeated error spam from mpu6050 driver
+    esp_log_level_set("mpu6050", ESP_LOG_WARN);
+
     ESP_LOGI(TAG, "Controller initialized successfully");
     return ESP_OK;
 }
 
 esp_err_t controller_start_tasks(void) {
     BaseType_t ret;
+    esp_err_t err;
     
     // Initialize I2C for IMU
-    ESP_ERROR_CHECK(i2c_master_init());
+    err = i2c_master_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize I2C: %s", esp_err_to_name(err));
+        // Log error but don't store in telemetry
+        // Continue anyway to allow web interface to work
+    }
     
     // Initialize MPU6050
-    ESP_ERROR_CHECK(mpu6050_init(I2C_NUM_0));
+    err = mpu6050_init(I2C_NUM_0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize MPU6050: %s", esp_err_to_name(err));
+        // Log error but don't store in telemetry
+        // Continue anyway to allow web interface to work
+    }
     
     // Initialize Hall-effect sensor on GPIO 4
-    ESP_ERROR_CHECK(hall_index_init(4));
+    err = hall_index_init(4);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize Hall sensor: %s", esp_err_to_name(err));
+        // Log error but don't store in telemetry
+        // Continue anyway to allow web interface to work
+    }
     
     // Allow some time for I2C devices to stabilize
     vTaskDelay(200 / portTICK_PERIOD_MS);
     
     // Create IMU task
-    ret = xTaskCreatePinnedToCore(
-        imu_task,
-        "imu_task",
-        IMU_TASK_STACK_SIZE,
-        NULL,
-        IMU_TASK_PRIORITY,
-        &imu_task_handle,
-        IMU_TASK_CORE
-    );
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create imu_task");
-        return ESP_FAIL;
-    }
+    // ret = xTaskCreatePinnedToCore(
+    //     imu_task,
+    //     "imu_task",
+    //     IMU_TASK_STACK_SIZE,
+    //     NULL,
+    //     IMU_TASK_PRIORITY,
+    //     &imu_task_handle,
+    //     IMU_TASK_CORE
+    // );
+    // if (ret != pdPASS) {
+    //     ESP_LOGE(TAG, "Failed to create imu_task");
+    //     return ESP_FAIL;
+    //} 
     
     // Allow some time for IMU task to start
     vTaskDelay(200 / portTICK_PERIOD_MS);
@@ -155,20 +170,6 @@ esp_err_t controller_start_tasks(void) {
         return ESP_FAIL;
     }
     
-    // Create logging task
-    ret = xTaskCreatePinnedToCore(
-        logging_task,
-        "logging_task",
-        LOGGING_TASK_STACK_SIZE,
-        NULL,
-        LOGGING_TASK_PRIORITY,
-        &logging_task_handle,
-        LOGGING_TASK_CORE
-    );
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create logging_task");
-        return ESP_FAIL;
-    }
     
     ESP_LOGI(TAG, "All controller tasks started successfully");
     return ESP_OK;
@@ -233,24 +234,66 @@ static void imu_task(void *pvParameters) {
     
     // Reset the last wake time after the initial delay
     last_wake_time = xTaskGetTickCount();
-    
+
     while (1) {
         // Read IMU
         mpu_data_t imu_data;
+        
+        // // Temporarily set log level higher to suppress MPU6050 errors
+        // // Store the current log level for the MPU6050 component
+        // esp_log_level_t old_level = esp_log_level_get("mpu6050");
+        
+        // // Set the log level to WARN to suppress ERROR messages during the read operation
+        // esp_log_level_set("mpu6050", ESP_LOG_WARN);
+        
+        // // Now perform the read operation with errors suppressed
         esp_err_t ret = mpu6050_get_raw(I2C_NUM_0, &imu_data);
+        
+        // // Restore the original log level
+        // esp_log_level_set("mpu6050", old_level);
         
         if (ret == ESP_OK) {
             // Send to control task (overwrite old data if not consumed)
             xQueueOverwrite(imu_queue, &imu_data);
+            
+            // Log communication restored (but only once)
+            static bool restored_logged = false;
+            if (!restored_logged) {
+                ESP_LOGI(TAG, "MPU6050 communication working");
+                restored_logged = true;
+            }
         } else {
-            ESP_LOGW(TAG, "Failed to read IMU data");
+            // Log error but continue (with rate limiting)
+            static uint32_t error_count = 0;
+            static int64_t last_error_time = 0;
+            int64_t now = esp_timer_get_time();
+            
+            error_count++;
+            
+            // Only log once per second to prevent console spam
+            if (now - last_error_time > 1000000) {
+                ESP_LOGW(TAG, "Failed to read IMU data: %s (%u times since last log)", 
+                         esp_err_to_name(ret), error_count);
+                last_error_time = now;
+                error_count = 0;
+            }
+            
+            // No longer adding error messages to telemetry
+            // Just tracking errors internally
         }
         
-        // Use safe vTaskDelay if xTaskDelayUntil keeps failing
-        // vTaskDelay(period);
-        
-        // Wake up at regular intervals
-        vTaskDelayUntil(&last_wake_time, period);
+        // Safety check: ensure we're not passing a zero or negative time increment
+        // which would cause xTaskDelayUntil to assert and crash
+        TickType_t current_tick = xTaskGetTickCount();
+        if (current_tick >= last_wake_time + period) {
+            // Too much time has passed, reset the wake time
+            last_wake_time = current_tick;
+            // Use regular delay as a fallback
+            vTaskDelay(period);
+        } else {
+            // Normal case: wake up at regular intervals
+            vTaskDelayUntil(&last_wake_time, period);
+        }
     }
 }
 
@@ -273,6 +316,7 @@ static void control_task(void *pvParameters) {
     while (1) {
         // Get latest IMU data
         mpu_data_t imu_data;
+        
         if (xQueueReceive(imu_queue, &imu_data, 0) == pdTRUE) {
             // Get the updated quaternion from the IMU data
             quaternion_t q = madgwick_update(&imu_data);
@@ -334,6 +378,9 @@ static void control_task(void *pvParameters) {
             
             // Update global telemetry
             controller_update_telemetry(&telemetry);
+        } else {
+            // No new IMU data, yield to avoid WDT starvation
+            vTaskDelay(1);
         }
         
         // Send telemetry periodically
@@ -351,11 +398,18 @@ static void control_task(void *pvParameters) {
             }
         }
         
-        // Use safe vTaskDelay as a fallback if needed
-        // vTaskDelay(period);
-        
-        // Wake up at regular intervals
-        vTaskDelayUntil(&last_wake_time, period);
+        // Safety check: ensure we're not passing a zero or negative time increment
+        // which would cause xTaskDelayUntil to assert and crash
+        TickType_t current_tick = xTaskGetTickCount();
+        if (current_tick >= last_wake_time + period) {
+            // Too much time has passed, reset the wake time
+            last_wake_time = current_tick;
+            // Use regular delay as a fallback
+            vTaskDelay(period);
+        } else {
+            // Normal case: wake up at regular intervals
+            vTaskDelayUntil(&last_wake_time, period);
+        }
     }
 }
 
@@ -368,51 +422,27 @@ static void motor_task(void *pvParameters) {
         float motor_commands[2];
         if (xQueueReceive(control_queue, motor_commands, portMAX_DELAY) == pdTRUE) {
             // Apply motor commands (will be implemented with actual motor driver)
-            // For now, just log
+            // For now, just log at debug level
             ESP_LOGD(TAG, "Motor commands: %.2f, %.2f", motor_commands[0], motor_commands[1]);
+            
+            // When motor driver is implemented, handle errors like this:
+            /*
+            esp_err_t ret = motor_driver_set_speed(motor_commands[0], motor_commands[1]);
+            if (ret != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to set motor speed: %s", esp_err_to_name(ret));
+                // Log error but don't store in telemetry
+            } else {
+                // Log motor driver recovery if needed
+                ESP_LOGI(TAG, "Motor driver communication working");
+            }
+            */
         }
     }
 }
 
-// Logging task - handles system logging
-static void logging_task(void *pvParameters) {
-    // Initialize the last wake time to the current tick count
-    TickType_t last_wake_time = xTaskGetTickCount();
-    
-    // Ensure we have at least 1 tick period (minimum safe value)
-    const TickType_t period = pdMS_TO_TICKS(20);  // 50Hz
-    
-    ESP_LOGI(TAG, "Logging task started");
-    
-    // Delay for one period before starting the loop to ensure stability
-    vTaskDelay(period);
-    
-    // Reset the last wake time after the initial delay
-    last_wake_time = xTaskGetTickCount();
-    
-    while (1) {
-        // Process any log messages in the queue
-        char *log_msg;
-        if (xQueueReceive(logging_queue, &log_msg, 0) == pdTRUE) {
-            // Process the log message (for now, just log it)
-            ESP_LOGI(TAG, "Log: %s", log_msg);
-            
-            // Free the message if it was dynamically allocated
-            // (Not implemented yet - would need memory management)
-        }
-        
-        // System health check and logging could go here
-        
-        // Use safe vTaskDelay as a fallback if needed
-        // vTaskDelay(period);
-        
-        // Wake up at regular intervals
-        vTaskDelayUntil(&last_wake_time, period);
-    }
-}
 
 // Helper function to initialize I2C
-static esp_err_t i2c_master_init(void) {
+esp_err_t i2c_master_init(void) {
     i2c_config_t conf = {
         .mode = I2C_MODE_MASTER,
         .sda_io_num = 21,

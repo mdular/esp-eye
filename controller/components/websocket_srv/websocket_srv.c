@@ -1,3 +1,4 @@
+#include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -17,6 +18,7 @@
 #define WEB_TASK_PRIORITY 3
 #define TELEMETRY_INTERVAL_MS 100  // 10Hz telemetry rate
 #define CLIENT_PRUNE_INTERVAL_MS 5000  // Check for stale clients every 5 seconds
+#define WS_LOG_MIN_LEVEL LOG_LEVEL_WARNING
 
 static const char *TAG = "websocket_srv";
 static httpd_handle_t server = NULL;
@@ -25,6 +27,10 @@ static int client_fds[MAX_WS_CLIENTS] = {0};
 static SemaphoreHandle_t client_lock = NULL;
 static TaskHandle_t web_task_handle = NULL;
 static QueueHandle_t telemetry_queue = NULL;
+static QueueHandle_t log_queue = NULL;
+
+// Forward declaration for custom log vprintf
+static int websocket_log_vprintf(const char *fmt, va_list args);
 
 /**
  * @brief Add a new client to the list
@@ -270,20 +276,19 @@ static void send_telemetry_to_clients(const telemetry_data_t *data) {
     }
     
     // Create JSON telemetry packet
-    char json[256];
-    // Use snprintf to ensure we don't overflow the buffer
-    int written = snprintf(json, sizeof(json), 
-             "{\"type\":\"telemetry\",\"data\":{"
-             "\"q\":[%.3f,%.3f,%.3f,%.3f],"
-             "\"pitch\":%.2f,\"roll\":%.2f,\"yaw\":%.2f,"
-             "\"m1\":%.2f,\"m2\":%.2f,"
-             "\"status\":%d,"
-             "\"counter\":%lu}}",
-             1.0f, 0.0f, 0.0f, 0.0f,  // Placeholder quaternion values (identity)
-             data->pitch, data->roll, data->yaw,
-             data->motor1_speed, data->motor2_speed,
-             0,  // Placeholder status (0 = IDLE)
-             data->counter);
+    char json[512];
+    int written = snprintf(json, sizeof(json),
+                 "{\"type\":\"telemetry\",\"data\":{"
+                 "\"q\":[%.3f,%.3f,%.3f,%.3f],"
+                 "\"pitch\":%.2f,\"roll\":%.2f,\"yaw\":%.2f,"
+                 "\"m1\":%.2f,\"m2\":%.2f,"
+                 "\"status\":%d,"
+                 "\"counter\":%lu}}",
+                 1.0f, 0.0f, 0.0f, 0.0f,  // Placeholder quaternion values (identity)
+                 data->pitch, data->roll, data->yaw,
+                 data->motor1_speed, data->motor2_speed,
+                 0,  // Status 0 = IDLE (or update as needed)
+                 (unsigned long)data->counter);
     
     // Check if we truncated the output
     if (written >= sizeof(json)) {
@@ -302,6 +307,64 @@ static void send_telemetry_to_clients(const telemetry_data_t *data) {
             esp_err_t ret = httpd_ws_send_frame_async(server, client_fds[i], &ws_pkt);
             if (ret != ESP_OK) {
                 ESP_LOGD(TAG, "Failed to send telemetry to client %d (fd=%d)", i, client_fds[i]);
+                // Client will be pruned during next check_and_remove_stale_clients call
+            }
+        }
+    }
+    xSemaphoreGive(client_lock);
+}
+
+/**
+ * @brief Send log message to all connected WebSocket clients
+ */
+static void send_log_to_clients(const log_message_t *log) {
+    if (client_count == 0) {
+        return;  // No clients connected
+    }
+    
+    // Create JSON log packet
+    char json[512];
+    
+    // Convert log level to string
+    const char *level_str;
+    switch (log->level) {
+        case LOG_LEVEL_DEBUG:    level_str = "debug"; break;
+        case LOG_LEVEL_INFO:     level_str = "info"; break;
+        case LOG_LEVEL_WARNING:  level_str = "warning"; break;
+        case LOG_LEVEL_ERROR:    level_str = "error"; break;
+        case LOG_LEVEL_CRITICAL: level_str = "critical"; break;
+        default:                 level_str = "unknown"; break;
+    }
+    
+    // Format JSON 
+    int written = snprintf(json, sizeof(json), 
+             "{\"type\":\"log\",\"data\":{"
+             "\"level\":\"%s\","
+             "\"timestamp\":%llu,"
+             "\"source\":\"%s\","
+             "\"message\":\"%s\"}}",
+             level_str,
+             log->timestamp_ms,
+             log->source,
+             log->message);
+    
+    // Check if we truncated the output
+    if (written >= sizeof(json)) {
+        ESP_LOGW(TAG, "Log JSON truncated (%d >= %d)", written, sizeof(json));
+    }
+    
+    httpd_ws_frame_t ws_pkt;
+    memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
+    ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+    ws_pkt.payload = (uint8_t*)json;
+    ws_pkt.len = strlen(json);
+    
+    xSemaphoreTake(client_lock, portMAX_DELAY);
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+        if (client_fds[i] != 0) {
+            esp_err_t ret = httpd_ws_send_frame_async(server, client_fds[i], &ws_pkt);
+            if (ret != ESP_OK) {
+                ESP_LOGD(TAG, "Failed to send log to client %d (fd=%d)", i, client_fds[i]);
                 // Client will be pruned during next check_and_remove_stale_clients call
             }
         }
@@ -347,6 +410,14 @@ static void web_task(void *pvParameters) {
             // Send explicit telemetry update from queue
             send_telemetry_to_clients(queue_data);
             free(queue_data);  // Free the dynamically allocated data
+        }
+        
+        // Check for log messages from queue
+        log_message_t *log_data = NULL;
+        if (xQueueReceive(log_queue, &log_data, 0) == pdTRUE) {
+            // Send log message to clients
+            send_log_to_clients(log_data);
+            free(log_data);  // Free the dynamically allocated data
         }
         
         // Yield to other tasks - use longer delay when no clients connected
@@ -424,13 +495,26 @@ esp_err_t websocket_srv_init(void) {
         return ESP_FAIL;
     }
     
+    // Create log message queue
+    log_queue = xQueueCreate(10, sizeof(log_message_t*));
+    if (log_queue == NULL) {
+        ESP_LOGE(TAG, "Failed to create log queue");
+        vSemaphoreDelete(client_lock);
+        vQueueDelete(telemetry_queue);
+        return ESP_FAIL;
+    }
+    
     // Start the HTTP server
     esp_err_t ret = start_server();
     if (ret != ESP_OK) {
         vSemaphoreDelete(client_lock);
         vQueueDelete(telemetry_queue);
+        vQueueDelete(log_queue);
         return ret;
     }
+
+    // Register log callback to forward warnings/errors to browser
+    esp_log_set_vprintf(websocket_log_vprintf);
     
     ESP_LOGI(TAG, "WebSocket server initialized successfully");
     return ESP_OK;
@@ -491,4 +575,84 @@ esp_err_t websocket_srv_publish_telemetry(const telemetry_data_t *data) {
     }
     
     return ESP_OK;
+}
+
+esp_err_t websocket_srv_publish_log(const log_message_t *log) {
+    if (log == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    // Don't allocate if there are no clients
+    if (client_count == 0) {
+        return ESP_OK;
+    }
+    
+    // Allocate memory for the data to be queued
+    log_message_t *queue_data = malloc(sizeof(log_message_t));
+    if (queue_data == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for log data");
+        return ESP_ERR_NO_MEM;
+    }
+    
+    // Copy the data
+    memcpy(queue_data, log, sizeof(log_message_t));
+    
+    // Send to queue
+    if (xQueueSend(log_queue, &queue_data, 0) != pdTRUE) {
+        // Queue full, free the allocated memory
+        free(queue_data);
+        return ESP_FAIL;
+    }
+    
+    return ESP_OK;
+}
+
+// Custom vprintf to forward ESP-IDF logs to websocket_srv_publish_log
+static int websocket_log_vprintf(const char *fmt, va_list args) {
+    char buf[256];
+    int len = vsnprintf(buf, sizeof(buf), fmt, args);
+    if (len <= 0) return vprintf(fmt, args); // fallback
+
+    // Parse ESP-IDF log format: "E (1234) TAG: message"
+    char level_char = buf[0];
+    log_level_t level = LOG_LEVEL_INFO;
+    switch (level_char) {
+        case 'E': level = LOG_LEVEL_ERROR; break;
+        case 'W': level = LOG_LEVEL_WARNING; break;
+        case 'I': level = LOG_LEVEL_INFO; break;
+        case 'D': level = LOG_LEVEL_DEBUG; break;
+        default:  level = LOG_LEVEL_INFO; break;
+    }
+    if (level < WS_LOG_MIN_LEVEL) return vprintf(fmt, args);
+
+    // Find tag and message
+    const char *tag_start = strchr(buf, ')');
+    const char *msg_start = 0;
+    char tag[32] = {0};
+    if (tag_start) {
+        // Find colon after tag
+        const char *tag_colon = strchr(tag_start, ':');
+        if (tag_colon && tag_colon > tag_start + 2) {
+            size_t tag_len = tag_colon - (tag_start + 2);
+            if (tag_len < sizeof(tag)) {
+                strncpy(tag, tag_start + 2, tag_len);
+                tag[tag_len] = '\0';
+            }
+            msg_start = tag_colon + 2; // skip ": "
+        } else {
+            msg_start = tag_start + 1;
+        }
+    } else {
+        msg_start = buf;
+    }
+
+    log_message_t log_msg = {0};
+    log_msg.level = level;
+    log_msg.timestamp_ms = esp_log_timestamp();
+    strncpy(log_msg.message, msg_start, sizeof(log_msg.message) - 1);
+    strncpy(log_msg.source, tag, sizeof(log_msg.source) - 1);
+    websocket_srv_publish_log(&log_msg);
+
+    // Also print to UART as usual
+    return vprintf(fmt, args);
 }

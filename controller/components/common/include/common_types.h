@@ -11,6 +11,34 @@ typedef struct {
 } quaternion_t;
 
 /**
+ * @brief Log level enum following standard logging conventions
+ */
+typedef enum {
+    LOG_LEVEL_DEBUG = 0,
+    LOG_LEVEL_INFO,
+    LOG_LEVEL_WARNING,
+    LOG_LEVEL_ERROR,
+    LOG_LEVEL_CRITICAL
+} log_level_t;
+
+/**
+ * @brief Log message structure for error and status reporting
+ */
+typedef struct {
+    // Log level (debug, info, warning, error, critical)
+    log_level_t level;
+    
+    // Timestamp in milliseconds since boot
+    uint64_t timestamp_ms;
+    
+    // Log message text
+    char message[256];
+    
+    // Optional component/module identifier
+    char source[32];
+} log_message_t;
+
+/**
  * @brief Telemetry data structure for communication between components
  */
 typedef struct {
@@ -28,4 +56,7 @@ typedef struct {
     
     // Counter for testing
     uint32_t counter;
+    
+    // Error message for reporting issues
+    char error_message[128];
 } telemetry_data_t;

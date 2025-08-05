@@ -68,7 +68,7 @@ esp_err_t mpu6050_get_raw(i2c_port_t i2c_num, mpu_data_t *data) {
     uint8_t buffer[14];
     esp_err_t ret = mpu6050_read_reg(i2c_num, MPU6050_REG_ACCEL_XOUT_H, buffer, 14);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to read MPU6050 data");
+        // ESP_LOGE(TAG, "Failed to read MPU6050 data");
         return ret;
     }
     
