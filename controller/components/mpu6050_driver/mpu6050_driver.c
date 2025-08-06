@@ -1,9 +1,14 @@
 #include <stdio.h>
+#include "driver/i2c_master.h"
 #include "driver/i2c.h"
 #include "esp_log.h"
 #include "mpu6050_driver.h"
 
 static const char *TAG = "mpu6050";
+
+// I2C bus and device handles for MPU6050
+static i2c_master_bus_handle_t s_i2c_bus = NULL;
+static i2c_master_dev_handle_t s_mpu6050_dev = NULL;
 
 // MPU6050 I2C address
 #define MPU6050_ADDR 0x68
@@ -15,77 +20,77 @@ static const char *TAG = "mpu6050";
 #define MPU6050_REG_GYRO_XOUT_H 0x43
 
 // Helper function to write a byte to a register
-static esp_err_t mpu6050_write_reg(i2c_port_t i2c_num, uint8_t reg, uint8_t data) {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (MPU6050_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, reg, true);
-    i2c_master_write_byte(cmd, data, true);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_PERIOD_MS);
-    i2c_cmd_link_delete(cmd);
-    return ret;
+static esp_err_t mpu6050_write_reg(uint8_t reg, uint8_t data) {
+    uint8_t buf[2] = {reg, data};
+    return i2c_master_transmit(s_mpu6050_dev, buf, 2, 1000 / portTICK_PERIOD_MS);
 }
 
 // Helper function to read a register
-static esp_err_t mpu6050_read_reg(i2c_port_t i2c_num, uint8_t reg, uint8_t *data, size_t len) {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (MPU6050_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, reg, true);
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (MPU6050_ADDR << 1) | I2C_MASTER_READ, true);
-    if (len > 1) {
-        i2c_master_read(cmd, data, len - 1, I2C_MASTER_ACK);
-    }
-    i2c_master_read_byte(cmd, data + len - 1, I2C_MASTER_NACK);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_PERIOD_MS);
-    i2c_cmd_link_delete(cmd);
-    return ret;
+static esp_err_t mpu6050_read_reg(uint8_t reg, uint8_t *data, size_t len) {
+    esp_err_t ret = i2c_master_transmit(s_mpu6050_dev, &reg, 1, 1000 / portTICK_PERIOD_MS);
+    if (ret != ESP_OK) return ret;
+    return i2c_master_receive(s_mpu6050_dev, data, len, 1000 / portTICK_PERIOD_MS);
 }
 
 esp_err_t mpu6050_init(i2c_port_t i2c_num) {
     ESP_LOGI(TAG, "Initializing MPU6050...");
-    
-    // Configure MPU6050
+
+    // Create I2C bus handle if not already created
+    if (!s_i2c_bus) {
+        i2c_master_bus_config_t bus_cfg = {
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .i2c_port = i2c_num,
+            .scl_io_num = 22,
+            .sda_io_num = 21,
+            .glitch_ignore_cnt = 0,
+            .flags.enable_internal_pullup = true,
+        };
+        ESP_ERROR_CHECK(i2c_master_bus_alloc(&bus_cfg, &s_i2c_bus));
+    }
+
+    // Register MPU6050 device
+    i2c_device_config_t dev_cfg = {
+        .device_address = MPU6050_ADDR,
+        .scl_speed_hz = 400000,
+    };
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &s_mpu6050_dev));
+
     // Wake up the MPU6050 (0x00 = wake up)
-    esp_err_t ret = mpu6050_write_reg(i2c_num, MPU6050_REG_PWR_MGMT_1, 0x00);
+    esp_err_t ret = mpu6050_write_reg(MPU6050_REG_PWR_MGMT_1, 0x00);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to wake up MPU6050");
         return ret;
     }
-    
+
     ESP_LOGI(TAG, "MPU6050 initialized successfully");
     return ESP_OK;
 }
 
-esp_err_t mpu6050_get_raw(i2c_port_t i2c_num, mpu_data_t *data) {
+esp_err_t mpu6050_get_raw(mpu_data_t *data) {
     if (data == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    
+
     uint8_t buffer[14];
-    esp_err_t ret = mpu6050_read_reg(i2c_num, MPU6050_REG_ACCEL_XOUT_H, buffer, 14);
+    esp_err_t ret = mpu6050_read_reg(MPU6050_REG_ACCEL_XOUT_H, buffer, 14);
     if (ret != ESP_OK) {
-        // ESP_LOGE(TAG, "Failed to read MPU6050 data");
         return ret;
     }
-    
+
     // Combine high and low bytes
     data->accel_x = (buffer[0] << 8) | buffer[1];
     data->accel_y = (buffer[2] << 8) | buffer[3];
     data->accel_z = (buffer[4] << 8) | buffer[5];
-    
+
     // Temperature
     int16_t temp_raw = (buffer[6] << 8) | buffer[7];
     data->temperature = temp_raw / 340.0f + 36.53f;  // MPU6050 datasheet formula
-    
+
     // Gyroscope
     data->gyro_x = (buffer[8] << 8) | buffer[9];
     data->gyro_y = (buffer[10] << 8) | buffer[11];
     data->gyro_z = (buffer[12] << 8) | buffer[13];
-    
+
     return ESP_OK;
 }
 

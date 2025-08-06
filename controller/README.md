@@ -5,7 +5,7 @@ This is the softare for an ESP32-based controller for the eye
 
 ## Hardware Setup
 
-- **Board:** ESP32-WROOM-32 (AZDelivery NodeMCU USB-C)
+- **Board:** ESP32-WROOM-32 (AZDelivery NodeMCU ESP32 Dev Kit C V2 or similar)
 - **Motor Pins:**
   - MOTOR1_PWM_A_PIN: GPIO 32
   - MOTOR1_PWM_B_PIN: GPIO 33
@@ -25,6 +25,11 @@ This is the softare for an ESP32-based controller for the eye
 
 - install esp-idf
 - configure dev env for dev board
+  - install required components (via `idf.py install-deps`)
+  - configure serial port (via `idf.py menuconfig` -> `Serial flasher config` -> `Default serial port`)
+  - configure monitor port (via `idf.py menuconfig` -> `Serial flasher config` -> `Default monitor port`)
+  - set partition table to `partitions.csv` in the root folder of this project (via `idf.py menuconfig` -> `Partition Table` -> `Partition Table CSV`)
+  - enable websocket server (via `idf.py menuconfig` -> `Component config` -> `Websocket server` -> `Enable websocket server`)
 
 
 ## Development

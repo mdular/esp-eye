@@ -32,7 +32,7 @@ esp_err_t mpu6050_init(i2c_port_t i2c_num);
  * @param data Pointer to store the raw data
  * @return esp_err_t ESP_OK on success
  */
-esp_err_t mpu6050_get_raw(i2c_port_t i2c_num, mpu_data_t *data);
+esp_err_t mpu6050_get_raw(mpu_data_t *data);
 
 /**
  * @brief Update quaternion using Madgwick filter

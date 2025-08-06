@@ -9,7 +9,7 @@
 #include "wifi_connect.h"
 
 static const char *TAG = "wifi";
-static const int WIFI_TX_POWER_DBM = 40; // Range is 8-84, which maps to power levels from 2dBm to 20dBm
+static const int WIFI_TX_POWER_DBM = 50; // Range is 8-84, which maps to power levels from 2dBm to 20dBm
 static esp_netif_t *s_sta_netif = NULL;
 static bool s_wifi_connected = false;
 static char s_ip_address[16] = {0};
