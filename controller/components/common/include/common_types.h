@@ -54,9 +54,6 @@ typedef struct {
     float motor1_speed;
     float motor2_speed;
     
-    // Counter for testing
-    uint32_t counter;
-    
     // Error message for reporting issues
     char error_message[128];
 } telemetry_data_t;

@@ -42,8 +42,6 @@ static uint8_t imu_queue_storage[sizeof(mpu_data_t)];
 static StaticQueue_t control_queue_buffer;
 static uint8_t control_queue_storage[sizeof(float) * 2];
 
-// Counter for testing
-static uint32_t counter = 0;
 
 // Telemetry callback
 static controller_telemetry_cb_t telemetry_callback = NULL;
@@ -56,7 +54,6 @@ static telemetry_data_t global_telemetry = {
     .last_hall_pulse_us = 0,
     .motor1_speed = 0.0f,
     .motor2_speed = 0.0f,
-    .counter = 0
 };
 
 // Task prototypes
@@ -81,8 +78,6 @@ esp_err_t controller_init(void) {
         return ESP_FAIL;
     }
 
-    // Suppress repeated error spam from mpu6050 driver
-    esp_log_level_set("mpu6050", ESP_LOG_WARN);
 
     ESP_LOGI(TAG, "Controller initialized successfully");
     return ESP_OK;
@@ -109,17 +104,19 @@ esp_err_t controller_start_tasks(void) {
     }
     
     // Initialize Hall-effect sensor on GPIO 4
-    err = hall_index_init(4);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize Hall sensor: %s", esp_err_to_name(err));
-        // Log error but don't store in telemetry
-        // Continue anyway to allow web interface to work
-    }
+    // TODO: enable
+    // err = hall_index_init(4);
+    // if (err != ESP_OK) {
+    //     ESP_LOGE(TAG, "Failed to initialize Hall sensor: %s", esp_err_to_name(err));
+    //     // Log error but don't store in telemetry
+    //     // Continue anyway to allow web interface to work
+    // }
     
     // Allow some time for I2C devices to stabilize
     vTaskDelay(200 / portTICK_PERIOD_MS);
     
     // Create IMU task
+    // TODO: enable
     // ret = xTaskCreatePinnedToCore(
     //     imu_task,
     //     "imu_task",
@@ -198,8 +195,6 @@ esp_err_t controller_get_telemetry(telemetry_data_t *data) {
     memcpy(data, &global_telemetry, sizeof(telemetry_data_t));
     
     // Make sure counter is always up to date
-    data->counter = counter;
-    
     return ESP_OK;
 }
 
@@ -374,8 +369,6 @@ static void control_task(void *pvParameters) {
             telemetry.motor1_speed = motor_commands[0];
             telemetry.motor2_speed = motor_commands[1];
             telemetry.last_hall_pulse_us = global_telemetry.last_hall_pulse_us; // Preserve hall timestamp
-            telemetry.counter = counter++;
-            
             // Update global telemetry
             controller_update_telemetry(&telemetry);
         } else {

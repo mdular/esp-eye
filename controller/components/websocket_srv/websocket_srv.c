@@ -16,7 +16,7 @@
 #define MAX_WS_CLIENTS 4
 #define WEB_TASK_STACK_SIZE 6144
 #define WEB_TASK_PRIORITY 3
-#define TELEMETRY_INTERVAL_MS 100  // 10Hz telemetry rate
+#define TELEMETRY_INTERVAL_MS 200  // 5Hz telemetry rate
 #define CLIENT_PRUNE_INTERVAL_MS 5000  // Check for stale clients every 5 seconds
 #define WS_LOG_MIN_LEVEL LOG_LEVEL_WARNING
 
@@ -282,13 +282,11 @@ static void send_telemetry_to_clients(const telemetry_data_t *data) {
                  "\"q\":[%.3f,%.3f,%.3f,%.3f],"
                  "\"pitch\":%.2f,\"roll\":%.2f,\"yaw\":%.2f,"
                  "\"m1\":%.2f,\"m2\":%.2f,"
-                 "\"status\":%d,"
-                 "\"counter\":%lu}}",
+                 "\"status\":%d}}",
                  1.0f, 0.0f, 0.0f, 0.0f,  // Placeholder quaternion values (identity)
                  data->pitch, data->roll, data->yaw,
                  data->motor1_speed, data->motor2_speed,
-                 0,  // Status 0 = IDLE (or update as needed)
-                 (unsigned long)data->counter);
+                 0);  // Status 0 = IDLE (or update as needed)
     
     // Check if we truncated the output
     if (written >= sizeof(json)) {
@@ -321,10 +319,22 @@ static void send_log_to_clients(const log_message_t *log) {
     if (client_count == 0) {
         return;  // No clients connected
     }
-    
+
+    // Sanitize log message: replace newlines with spaces
+    char sanitized_msg[256];
+    int j = 0;
+    for (int i = 0; log->message[i] != '\0' && j < sizeof(sanitized_msg) - 1; i++) {
+        if (log->message[i] == '\n' || log->message[i] == '\r') {
+            sanitized_msg[j++] = ' ';
+        } else {
+            sanitized_msg[j++] = log->message[i];
+        }
+    }
+    sanitized_msg[j] = '\0';
+
     // Create JSON log packet
     char json[512];
-    
+
     // Convert log level to string
     const char *level_str;
     switch (log->level) {
@@ -335,9 +345,9 @@ static void send_log_to_clients(const log_message_t *log) {
         case LOG_LEVEL_CRITICAL: level_str = "critical"; break;
         default:                 level_str = "unknown"; break;
     }
-    
-    // Format JSON 
-    int written = snprintf(json, sizeof(json), 
+
+    // Format JSON
+    int written = snprintf(json, sizeof(json),
              "{\"type\":\"log\",\"data\":{"
              "\"level\":\"%s\","
              "\"timestamp\":%llu,"
@@ -346,19 +356,19 @@ static void send_log_to_clients(const log_message_t *log) {
              level_str,
              log->timestamp_ms,
              log->source,
-             log->message);
-    
+             sanitized_msg);
+
     // Check if we truncated the output
     if (written >= sizeof(json)) {
         ESP_LOGW(TAG, "Log JSON truncated (%d >= %d)", written, sizeof(json));
     }
-    
+
     httpd_ws_frame_t ws_pkt;
     memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
     ws_pkt.type = HTTPD_WS_TYPE_TEXT;
     ws_pkt.payload = (uint8_t*)json;
     ws_pkt.len = strlen(json);
-    
+
     xSemaphoreTake(client_lock, portMAX_DELAY);
     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
         if (client_fds[i] != 0) {

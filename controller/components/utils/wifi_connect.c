@@ -9,6 +9,7 @@
 #include "wifi_connect.h"
 
 static const char *TAG = "wifi";
+static const int WIFI_TX_POWER_DBM = 40; // Range is 8-84, which maps to power levels from 2dBm to 20dBm
 static esp_netif_t *s_sta_netif = NULL;
 static bool s_wifi_connected = false;
 static char s_ip_address[16] = {0};
@@ -82,9 +83,8 @@ esp_err_t wifi_connect_start(void) {
     vTaskDelay(200 / portTICK_PERIOD_MS);
     
     // Set the output power level (lower power to reduce current draw)
-    // Range is 8-84, which maps to power levels from 2dBm to 20dBm
     // Lower value = less power consumption but shorter range
-    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(20)); // Minimum viable power level to prevent brownouts
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(WIFI_TX_POWER_DBM)); // Set WiFi TX power via constant
     
     ESP_LOGI(TAG, "WiFi connection started with minimal power");
     return ESP_OK;
