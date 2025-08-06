@@ -3,6 +3,24 @@
 This is the softare for an ESP32-based controller for the eye
 
 
+## Hardware Setup
+
+- **Board:** ESP32-WROOM-32 (AZDelivery NodeMCU USB-C)
+- **Motor Pins:**
+  - MOTOR1_PWM_A_PIN: GPIO 32
+  - MOTOR1_PWM_B_PIN: GPIO 33
+  - MOTOR2_PWM_A_PIN: GPIO 25
+  - MOTOR2_PWM_B_PIN: GPIO 26
+- **I2C (IMU):**
+  - SDA: GPIO 21
+  - SCL: GPIO 22
+- **Hall Sensor:**
+  - GPIO 4 (currently disabled in code)
+- **Power:**
+  - Use onboard USB-C for power and programming.
+- **Boot:**
+  - Standard ESP32-WROOM-32 boot sequence.
+
 ## Setup
 
 - install esp-idf
