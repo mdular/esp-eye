@@ -2,75 +2,42 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
-#include "wifi_connect.h"
-#include "http_server.h"
-#include "esp_event.h"
 #include "esp_spiffs.h"
 #include "esp_system.h"
 #include "esp_pm.h"
-#include "esp_sleep.h"
+#include "esp_log.h"
 
-// Data update manager function prototype
-typedef void (*data_update_callback_t)(int counter);
-static data_update_callback_t data_update_callback = NULL;
+#include "wifi_connect.h"
+#include "websocket_srv.h"
+#include "controller.h"
 
-// Register callback for data updates
-void register_data_update_callback(data_update_callback_t callback) {
-    data_update_callback = callback;
-}
-
-// Update counter data
-void update_counter_data(int counter) {
-    // Notify registered callbacks
-    if (data_update_callback) {
-        data_update_callback(counter);
-    }
-}
-
-void counter_loop(void) {
-    int counter = 0;
-    const TickType_t delay_time = 1000 / portTICK_PERIOD_MS;
-    
-    while (1) {
-        printf("Counter: %d\n", counter);
-        
-        // Update the counter data through the decoupled interface
-        update_counter_data(counter);
-        
-        // Increment counter
-        counter++;
-        
-        // Give more time for the system to stabilize
-        vTaskDelay(delay_time);
-    }
-}
+static const char *TAG = "main";
 
 void app_main(void)
 {
+    // Initial delay to allow power stabilization at boot
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        nvs_flash_init();
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ESP_ERROR_CHECK(nvs_flash_init());
     }
     
-    // Configure brownout detector - increase threshold to avoid false triggers
-    // This requires sdkconfig.h to have CONFIG_ESP_BROWNOUT_DET enabled
-    // Use esp_brownout_disable() if you want to disable it completely
-    // esp_brownout_set_threshold(3); // Set to a higher threshold (default is usually around 2.7V)
-    
-    // Set CPU frequency to a moderate level to reduce power consumption
-    // esp_pm_config_esp32_t pm_config = {
-    //     .max_freq_mhz = 160,
-    //     .min_freq_mhz = 80,
-    //     .light_sleep_enable = false
+    // Configure power management
+    // esp_pm_config_t pm_config = {
+    //     .max_freq_mhz = 160,                // Maximum CPU frequency
+    //     .min_freq_mhz = 80,                 // Minimum CPU frequency when idle
+    //     .light_sleep_enable = true          // Enable light sleep mode
     // };
-    // esp_pm_configure(&pm_config);
+    // ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
+    // ESP_LOGI(TAG, "Power management configured for efficiency");
     
-    // Delay to stabilize power at startup
+    // Additional delay to stabilize power after NVS initialization
     vTaskDelay(500 / portTICK_PERIOD_MS);
     
-    printf("[System] ESP32 initialized\n");
+    ESP_LOGI(TAG, "ESP32 initialized");
 
     // Mount SPIFFS
     esp_vfs_spiffs_conf_t conf = {
@@ -79,26 +46,48 @@ void app_main(void)
         .max_files = 5,
         .format_if_mount_failed = true
     };
-    ret = esp_vfs_spiffs_register(&conf);
-    if (ret != ESP_OK) {
-        printf("[SPIFFS] Failed to mount or format filesystem\n");
-    } else {
-        printf("[SPIFFS] SPIFFS mounted successfully\n");
-    }
+    ESP_ERROR_CHECK(esp_vfs_spiffs_register(&conf));
+    ESP_LOGI(TAG, "SPIFFS mounted successfully");
+    
+    // Delay after SPIFFS mount
+    vTaskDelay(300 / portTICK_PERIOD_MS);
 
-    printf("[WiFi] Initializing WiFi...\n");
-    wifi_init_sta();
+    // Initialize WiFi
+    ESP_LOGI(TAG, "Initializing WiFi...");
+    ESP_ERROR_CHECK(wifi_connect_init());
+    
+    // Delay before starting WiFi to prevent power spike
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    
+    ESP_ERROR_CHECK(wifi_connect_start());
 
-    // Wait for WiFi connection before starting HTTP server
-    // In production, use event group or callback to wait for connection
-    vTaskDelay(5000 / portTICK_PERIOD_MS); // crude wait for WiFi
+    // Wait for WiFi connection before starting services
+    // In production, use event group or callback instead of delay
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
     
-    // Start HTTP server
-    start_http_server();
+    // Initialize controller
+    ESP_LOGI(TAG, "Initializing controller...");
+    ESP_ERROR_CHECK(controller_init());
     
-    // Register WebSocket update callback
-    register_data_update_callback(update_websocket_data);
+    // Delay to allow controller initialization to complete
+    vTaskDelay(500 / portTICK_PERIOD_MS);
     
-    // Start the counter loop
-    counter_loop();
+    // Start WebSocket server
+    ESP_LOGI(TAG, "Starting WebSocket server...");
+    ESP_ERROR_CHECK(websocket_srv_init());
+    
+    // Delay before starting WebSocket task
+    vTaskDelay(300 / portTICK_PERIOD_MS);
+    
+    // Start controller tasks first so the callback can be registered
+    ESP_LOGI(TAG, "Starting controller tasks...");
+    ESP_ERROR_CHECK(controller_start_tasks());
+    
+    // Small delay before starting WebSocket server task
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    
+    // Now start the WebSocket server task which will register the callback
+    ESP_ERROR_CHECK(websocket_srv_start());
+    
+    ESP_LOGI(TAG, "System startup complete");
 }
