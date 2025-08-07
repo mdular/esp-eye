@@ -1,14 +1,9 @@
 #include <stdio.h>
-#include "driver/i2c_master.h"
 #include "driver/i2c.h"
 #include "esp_log.h"
 #include "mpu6050_driver.h"
 
 static const char *TAG = "mpu6050";
-
-// I2C bus and device handles for MPU6050
-static i2c_master_bus_handle_t s_i2c_bus = NULL;
-static i2c_master_dev_handle_t s_mpu6050_dev = NULL;
 
 // MPU6050 I2C address
 #define MPU6050_ADDR 0x68
@@ -20,43 +15,34 @@ static i2c_master_dev_handle_t s_mpu6050_dev = NULL;
 #define MPU6050_REG_GYRO_XOUT_H 0x43
 
 // Helper function to write a byte to a register
-static esp_err_t mpu6050_write_reg(uint8_t reg, uint8_t data) {
+static esp_err_t mpu6050_write_reg(i2c_port_t i2c_num, uint8_t reg, uint8_t data) {
     uint8_t buf[2] = {reg, data};
-    return i2c_master_transmit(s_mpu6050_dev, buf, 2, 1000 / portTICK_PERIOD_MS);
+    return i2c_master_write_to_device(i2c_num, MPU6050_ADDR, buf, 2, 1000 / portTICK_PERIOD_MS);
 }
 
 // Helper function to read a register
-static esp_err_t mpu6050_read_reg(uint8_t reg, uint8_t *data, size_t len) {
-    esp_err_t ret = i2c_master_transmit(s_mpu6050_dev, &reg, 1, 1000 / portTICK_PERIOD_MS);
-    if (ret != ESP_OK) return ret;
-    return i2c_master_receive(s_mpu6050_dev, data, len, 1000 / portTICK_PERIOD_MS);
+static esp_err_t mpu6050_read_reg(i2c_port_t i2c_num, uint8_t reg, uint8_t *data, size_t len) {
+    return i2c_master_write_read_device(i2c_num, MPU6050_ADDR, &reg, 1, data, len, 1000 / portTICK_PERIOD_MS);
 }
 
 esp_err_t mpu6050_init(i2c_port_t i2c_num) {
     ESP_LOGI(TAG, "Initializing MPU6050...");
 
-    // Create I2C bus handle if not already created
-    if (!s_i2c_bus) {
-        i2c_master_bus_config_t bus_cfg = {
-            .clk_source = I2C_CLK_SRC_DEFAULT,
-            .i2c_port = i2c_num,
-            .scl_io_num = 22,
-            .sda_io_num = 21,
-            .glitch_ignore_cnt = 0,
-            .flags.enable_internal_pullup = true,
-        };
-        ESP_ERROR_CHECK(i2c_master_bus_alloc(&bus_cfg, &s_i2c_bus));
-    }
-
-    // Register MPU6050 device
-    i2c_device_config_t dev_cfg = {
-        .device_address = MPU6050_ADDR,
-        .scl_speed_hz = 400000,
+    // Legacy ESP-IDF I2C initialization
+    i2c_config_t conf = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = 21,
+        .scl_io_num = 22,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = 400000,
+        .clk_flags = 0,
     };
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &s_mpu6050_dev));
+    ESP_ERROR_CHECK(i2c_param_config(i2c_num, &conf));
+    ESP_ERROR_CHECK(i2c_driver_install(i2c_num, I2C_MODE_MASTER, 0, 0, 0));
 
     // Wake up the MPU6050 (0x00 = wake up)
-    esp_err_t ret = mpu6050_write_reg(MPU6050_REG_PWR_MGMT_1, 0x00);
+    esp_err_t ret = mpu6050_write_reg(i2c_num, MPU6050_REG_PWR_MGMT_1, 0x00);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to wake up MPU6050");
         return ret;
@@ -66,13 +52,13 @@ esp_err_t mpu6050_init(i2c_port_t i2c_num) {
     return ESP_OK;
 }
 
-esp_err_t mpu6050_get_raw(mpu_data_t *data) {
+esp_err_t mpu6050_get_raw(i2c_port_t i2c_num, mpu_data_t *data) {
     if (data == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
     uint8_t buffer[14];
-    esp_err_t ret = mpu6050_read_reg(MPU6050_REG_ACCEL_XOUT_H, buffer, 14);
+    esp_err_t ret = mpu6050_read_reg(i2c_num, MPU6050_REG_ACCEL_XOUT_H, buffer, 14);
     if (ret != ESP_OK) {
         return ret;
     }

@@ -1,9 +1,9 @@
 #pragma once
 
-// Central sensor toggles (set to 1 to enable, 0 to disable)
-#define ENABLE_MPU6050     0
-#define ENABLE_MOTORS      0
-#define ENABLE_HALL_SENSOR 0
+// Default runtime toggles for controller activities (all OFF)
+#define DEFAULT_MPU6050_ENABLED     0
+#define DEFAULT_MOTORS_ENABLED      0
+#define DEFAULT_HALL_SENSOR_ENABLED 0
 
 /**
  * @brief Quaternion structure for orientation representation

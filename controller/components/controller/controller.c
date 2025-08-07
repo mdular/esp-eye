@@ -13,6 +13,19 @@
 
 static const char *TAG = "controller";
 
+// Runtime toggles for controller activities (default OFF)
+static bool mpu6050_enabled = DEFAULT_MPU6050_ENABLED;
+static bool hall_sensor_enabled = DEFAULT_HALL_SENSOR_ENABLED;
+static bool motors_enabled = DEFAULT_MOTORS_ENABLED;
+
+// Setter/getter functions
+void controller_set_mpu6050_enabled(bool enabled) { mpu6050_enabled = enabled; }
+bool controller_get_mpu6050_enabled(void) { return mpu6050_enabled; }
+void controller_set_hall_sensor_enabled(bool enabled) { hall_sensor_enabled = enabled; }
+bool controller_get_hall_sensor_enabled(void) { return hall_sensor_enabled; }
+void controller_set_motors_enabled(bool enabled) { motors_enabled = enabled; }
+bool controller_get_motors_enabled(void) { return motors_enabled; }
+
 // Task parameters
 #define IMU_TASK_STACK_SIZE 3072
 #define CONTROL_TASK_STACK_SIZE 3072
@@ -96,7 +109,7 @@ esp_err_t controller_start_tasks(void) {
         // Continue anyway to allow web interface to work
     }
     
-#if ENABLE_MPU6050
+if (mpu6050_enabled) {
     // Initialize MPU6050
     err = mpu6050_init(I2C_NUM_0);
     if (err != ESP_OK) {
@@ -104,9 +117,9 @@ esp_err_t controller_start_tasks(void) {
         // Log error but don't store in telemetry
         // Continue anyway to allow web interface to work
     }
-#endif
+}
 
-#if ENABLE_HALL_SENSOR
+if (hall_sensor_enabled) {
     // Initialize Hall-effect sensor on GPIO 4
     err = hall_index_init(4);
     if (err != ESP_OK) {
@@ -114,12 +127,12 @@ esp_err_t controller_start_tasks(void) {
         // Log error but don't store in telemetry
         // Continue anyway to allow web interface to work
     }
-#endif
+}
     
     // Allow some time for I2C devices to stabilize
     vTaskDelay(200 / portTICK_PERIOD_MS);
     
-#if ENABLE_MPU6050
+if (mpu6050_enabled) {
     // Create IMU task
     ret = xTaskCreatePinnedToCore(
         imu_task,
@@ -134,7 +147,7 @@ esp_err_t controller_start_tasks(void) {
         ESP_LOGE(TAG, "Failed to create imu_task");
         return ESP_FAIL;
     }
-#endif
+}
     
     // Allow some time for IMU task to start
     vTaskDelay(200 / portTICK_PERIOD_MS);
@@ -220,11 +233,9 @@ esp_err_t controller_register_telemetry_callback(controller_telemetry_cb_t callb
 }
 
 // IMU task - samples IMU at 200Hz and puts data in queue
-#if ENABLE_MPU6050
 static void imu_task(void *pvParameters) {
     // ... (function unchanged)
 }
-#endif
 
 // Control task - processes IMU data and sends motor commands
 static void control_task(void *pvParameters) {
@@ -271,44 +282,44 @@ static void control_task(void *pvParameters) {
             float cosy_cosp = 1.0f - 2.0f * (q.q2 * q.q2 + q.q3 * q.q3);
             yaw = atan2f(siny_cosp, cosy_cosp);
             
-#if ENABLE_HALL_SENSOR
-            // Check hall sensor queue (non-blocking)
-            hall_event_t hall_event;
-            QueueHandle_t hall_queue = hall_index_get_queue();
-            if (hall_queue != NULL && xQueueReceive(hall_queue, &hall_event, 0) == pdTRUE) {
-                // Reset yaw reference when hall sensor is triggered
-                global_telemetry.last_hall_pulse_us = hall_event.timestamp;
-                ESP_LOGI(TAG, "Hall sensor triggered at %" PRIu64 " us", hall_event.timestamp);
+            if (hall_sensor_enabled) {
+                // Check hall sensor queue (non-blocking)
+                hall_event_t hall_event;
+                QueueHandle_t hall_queue = hall_index_get_queue();
+                if (hall_queue != NULL && xQueueReceive(hall_queue, &hall_event, 0) == pdTRUE) {
+                    // Reset yaw reference when hall sensor is triggered
+                    global_telemetry.last_hall_pulse_us = hall_event.timestamp;
+                    ESP_LOGI(TAG, "Hall sensor triggered at %" PRIu64 " us", hall_event.timestamp);
+                }
             }
-#endif
             
-#if ENABLE_MOTORS
-            // Calculate motor commands based on orientation
-            float motor_commands[2] = {
-                -roll * 5.0f,  // Simple P controller for roll
-                -pitch * 5.0f  // Simple P controller for pitch
-            };
-            
-            // Clamp motor commands to safe range [-1.0, 1.0]
-            if (motor_commands[0] > 1.0f) motor_commands[0] = 1.0f;
-            if (motor_commands[0] < -1.0f) motor_commands[0] = -1.0f;
-            if (motor_commands[1] > 1.0f) motor_commands[1] = 1.0f;
-            if (motor_commands[1] < -1.0f) motor_commands[1] = -1.0f;
-            
-            // Send commands to motor task
-            xQueueOverwrite(control_queue, motor_commands);
-            
-            // Update telemetry
-            telemetry_data_t telemetry;
-            telemetry.roll = roll * 180.0f / M_PI;  // Convert to degrees
-            telemetry.pitch = pitch * 180.0f / M_PI;
-            telemetry.yaw = yaw * 180.0f / M_PI;
-            telemetry.motor1_speed = motor_commands[0];
-            telemetry.motor2_speed = motor_commands[1];
-            telemetry.last_hall_pulse_us = global_telemetry.last_hall_pulse_us; // Preserve hall timestamp
-            // Update global telemetry
-            controller_update_telemetry(&telemetry);
-#endif
+            if (motors_enabled) {
+                // Calculate motor commands based on orientation
+                float motor_commands[2] = {
+                    -roll * 5.0f,  // Simple P controller for roll
+                    -pitch * 5.0f  // Simple P controller for pitch
+                };
+                
+                // Clamp motor commands to safe range [-1.0, 1.0]
+                if (motor_commands[0] > 1.0f) motor_commands[0] = 1.0f;
+                if (motor_commands[0] < -1.0f) motor_commands[0] = -1.0f;
+                if (motor_commands[1] > 1.0f) motor_commands[1] = 1.0f;
+                if (motor_commands[1] < -1.0f) motor_commands[1] = -1.0f;
+                
+                // Send commands to motor task
+                xQueueOverwrite(control_queue, motor_commands);
+                
+                // Update telemetry
+                telemetry_data_t telemetry;
+                telemetry.roll = roll * 180.0f / M_PI;  // Convert to degrees
+                telemetry.pitch = pitch * 180.0f / M_PI;
+                telemetry.yaw = yaw * 180.0f / M_PI;
+                telemetry.motor1_speed = motor_commands[0];
+                telemetry.motor2_speed = motor_commands[1];
+                telemetry.last_hall_pulse_us = global_telemetry.last_hall_pulse_us; // Preserve hall timestamp
+                // Update global telemetry
+                controller_update_telemetry(&telemetry);
+            }
         } else {
             // No new IMU data, yield to avoid WDT starvation
             vTaskDelay(1);
@@ -345,7 +356,6 @@ static void control_task(void *pvParameters) {
 }
 
 // Motor task - applies motor commands
-#if ENABLE_MOTORS
 static void motor_task(void *pvParameters) {
     ESP_LOGI(TAG, "Motor task started");
     
@@ -353,25 +363,26 @@ static void motor_task(void *pvParameters) {
         // Get latest motor commands
         float motor_commands[2];
         if (xQueueReceive(control_queue, motor_commands, portMAX_DELAY) == pdTRUE) {
-            // Apply motor commands (will be implemented with actual motor driver)
-            // For now, just log at debug level
-            ESP_LOGD(TAG, "Motor commands: %.2f, %.2f", motor_commands[0], motor_commands[1]);
-            
-            // When motor driver is implemented, handle errors like this:
-            /*
-            esp_err_t ret = motor_driver_set_speed(motor_commands[0], motor_commands[1]);
-            if (ret != ESP_OK) {
-                ESP_LOGW(TAG, "Failed to set motor speed: %s", esp_err_to_name(ret));
-                // Log error but don't store in telemetry
-            } else {
-                // Log motor driver recovery if needed
-                ESP_LOGI(TAG, "Motor driver communication working");
+            if (motors_enabled) {
+                // Apply motor commands (will be implemented with actual motor driver)
+                // For now, just log at debug level
+                ESP_LOGD(TAG, "Motor commands: %.2f, %.2f", motor_commands[0], motor_commands[1]);
+                
+                // When motor driver is implemented, handle errors like this:
+                /*
+                esp_err_t ret = motor_driver_set_speed(motor_commands[0], motor_commands[1]);
+                if (ret != ESP_OK) {
+                    ESP_LOGW(TAG, "Failed to set motor speed: %s", esp_err_to_name(ret));
+                    // Log error but don't store in telemetry
+                } else {
+                    // Log motor driver recovery if needed
+                    ESP_LOGI(TAG, "Motor driver communication working");
+                }
+                */
             }
-            */
         }
     }
 }
-#endif
 
 
 // Helper function to initialize I2C

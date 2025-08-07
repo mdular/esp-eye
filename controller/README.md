@@ -30,6 +30,8 @@ This is the softare for an ESP32-based controller for the eye
   - configure monitor port (via `idf.py menuconfig` -> `Serial flasher config` -> `Default monitor port`)
   - set partition table to `partitions.csv` in the root folder of this project (via `idf.py menuconfig` -> `Partition Table` -> `Partition Table CSV`)
   - enable websocket server (via `idf.py menuconfig` -> `Component config` -> `Websocket server` -> `Enable websocket server`)
+  - set flash size to 4MB (via `idf.py menuconfig` -> `Serial flasher config` -> `Flash size`)
+  - Enable BOYA flash chip support (via `idf.py menuconfig` -> `Component config` -> `ESP32-specific` -> `SPI Flash Support` -> `Support BOYA flash chip`)
 
 
 ## Development
