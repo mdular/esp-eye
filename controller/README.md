@@ -3,10 +3,35 @@
 This is the softare for an ESP32-based controller for the eye
 
 
+## Hardware Setup
+
+- **Board:** ESP32-WROOM-32 (AZDelivery NodeMCU ESP32 Dev Kit C V2 or similar)
+- **Motor Pins:**
+  - MOTOR1_PWM_A_PIN: GPIO 32
+  - MOTOR1_PWM_B_PIN: GPIO 33
+  - MOTOR2_PWM_A_PIN: GPIO 25
+  - MOTOR2_PWM_B_PIN: GPIO 26
+- **I2C (IMU):**
+  - SDA: GPIO 21
+  - SCL: GPIO 22
+- **Hall Sensor:**
+  - GPIO 4 (currently disabled in code)
+- **Power:**
+  - Use onboard USB-C for power and programming.
+- **Boot:**
+  - Standard ESP32-WROOM-32 boot sequence.
+
 ## Setup
 
 - install esp-idf
 - configure dev env for dev board
+  - install required components (via `idf.py install-deps`)
+  - configure serial port (via `idf.py menuconfig` -> `Serial flasher config` -> `Default serial port`)
+  - configure monitor port (via `idf.py menuconfig` -> `Serial flasher config` -> `Default monitor port`)
+  - set partition table to `partitions.csv` in the root folder of this project (via `idf.py menuconfig` -> `Partition Table` -> `Partition Table CSV`)
+  - enable websocket server (via `idf.py menuconfig` -> `Component config` -> `Websocket server` -> `Enable websocket server`)
+  - set flash size to 4MB (via `idf.py menuconfig` -> `Serial flasher config` -> `Flash size`)
+  - Enable BOYA flash chip support (via `idf.py menuconfig` -> `Component config` -> `ESP32-specific` -> `SPI Flash Support` -> `Support BOYA flash chip`)
 
 
 ## Development

@@ -67,8 +67,7 @@
 | **imu\_task**     | 0    | 5 ms (200 Hz) | 3 k   | Read MPU‑6050, run Madgwick, post quaternion to queue             |
 | **control\_task** | 0    | 5 ms          | 3 k   | Compute PID for pitch/roll/yaw; apply Hall yaw‑zero; send PWM cmd |
 | **motor\_task**   | 0    | event‑driven  | 3 k   | Translate duty cycle → H‑bridge; fault detect                     |
-| **web\_task**     | 1    | async         | 6 k   | HTTP + WebSocket server; OTA updates                              |
-| **logging\_task** | 0    | 20 ms         | 2 k   | Flush ring buffer to UART / file                                  |
+| **web\_task**     | 1    | async         | 6 k   | HTTP + WebSocket server; telemetry and log distribution; OTA updates |
 
 > **RTOS Guidelines**
 > • Pin all real‑time motion‑control tasks (imu, control, motor) to **core 0**. Run Wi‑Fi, HTTP/WebSocket, and other non‑real‑time tasks on **core 1**.
@@ -90,7 +89,23 @@ main/
   app_main.c
 ```
 
-### 4.3  Practical Tips (core‑allocation)
+### 4.3  WebSocket Communication Protocol
+
+The WebSocket server supports two primary frame types for communication with clients:
+
+1. **Telemetry Frames** - Real-time system state information
+   - Contains quaternion orientation, motor status, and control parameters
+   - Sent at regular intervals (typically 10 Hz) to connected clients
+   - Format: `{"type": "telemetry", "data": {...}}`
+
+2. **Log Frames** - System events and diagnostic information
+   - Structured with severity level (debug, info, warning, error, critical)
+   - Includes timestamp, source component, and message text
+   - Format: `{"type": "log", "level": "error", "source": "component_name", "message": "Error details", "timestamp_ms": 1234567890}`
+
+Each frame type is processed separately on the client side, with telemetry data updating the visualization and log messages displayed in a dedicated console area.
+
+### 4.4  Practical Tips (core‑allocation)
 
 1. **Affinity macros** – pin tasks explicitly so scheduling is deterministic:
 

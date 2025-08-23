@@ -10,8 +10,8 @@
             margin: 0 auto;
             padding: 20px;
         }
-        .counter-display {
-            font-size: 24px;
+        .data-display {
+            font-size: 18px;
             margin: 20px 0;
             padding: 10px;
             border: 1px solid #ddd;
@@ -39,31 +39,147 @@
             margin-top: 10px;
             font-weight: bold;
         }
+        #visualization {
+            width: 300px;
+            height: 300px;
+            border: 1px solid #ccc;
+            margin: 20px 0;
+            position: relative;
+            background-color: #f5f5f5;
+        }
+        .indicator-dot {
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            background-color: #4CAF50;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 5px rgba(0,0,0,0.3);
+        }
+        .axis-line {
+            position: absolute;
+            background-color: #ddd;
+        }
+        .horizontal-line {
+            width: 100%;
+            height: 1px;
+            top: 50%;
+            left: 0;
+        }
+        .vertical-line {
+            width: 1px;
+            height: 100%;
+            top: 0;
+            left: 50%;
+        }
+        .axis-label {
+            position: absolute;
+            font-size: 12px;
+            color: #666;
+        }
+        .pitch-label-pos {
+            top: 5px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        .pitch-label-neg {
+            bottom: 5px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        .yaw-label-pos {
+            top: 50%;
+            right: 5px;
+            transform: translateY(-50%);
+        }
+        .yaw-label-neg {
+            top: 50%;
+            left: 5px;
+            transform: translateY(-50%);
+        }
+        .center-label {
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 10px;
+            color: #999;
+        }
+        .error-display {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 4px;
+            background-color: #ffebee;
+            border: 1px solid #f44336;
+            color: #d32f2f;
+        }
+        .error-display h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+        }
+        #error-message {
+            font-family: monospace;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
     </style>
 </head>
 <body>
     <h1>ESP Eye Controller</h1>
-    <p>Counter value from the ESP32:</p>
     
-    <div class="counter-display" id="counter">Waiting for connection...</div>
-    
+    <div class="connection-status" id="connection-status">Disconnected</div>
     <button id="ws-button" onclick="toggleConnection()">Connect</button>
     
-    <div class="connection-status" id="status">Disconnected</div>
-
+    <h2>Telemetry Data</h2>
+    
+    <div class="data-display">
+        <div>Status: <span id="status">-</span></div>
+        <div>Orientation (q): <span id="orientation">-</span></div>
+        <div>Pitch: <span id="pitch">-</span>°</div>
+        <div>Roll: <span id="roll">-</span>°</div>
+        <div>Yaw: <span id="yaw">-</span>°</div>
+        <div>Motors: <span id="motors">-</span></div>
+    </div>
+    
+    <!-- Error message display area - always shown -->
+    <div id="error-container" class="error-display">
+        <h3>System Log</h3>
+        <div id="error-message">No errors reported</div>
+    </div>
+    
+    <h2>Orientation Visualization</h2>
+    <div id="visualization">
+        <!-- Axis lines -->
+        <div class="axis-line horizontal-line"></div>
+        <div class="axis-line vertical-line"></div>
+        
+        <!-- Axis labels -->
+        <div class="axis-label pitch-label-pos">+90° Pitch</div>
+        <div class="axis-label pitch-label-neg">-90° Pitch</div>
+        <div class="axis-label yaw-label-pos">+180° Yaw</div>
+        <div class="axis-label yaw-label-neg">-180° Yaw</div>
+        <div class="axis-label center-label">0°</div>
+        
+        <!-- Position indicator -->
+        <div class="indicator-dot" id="position-indicator"></div>
+    </div>
+    
     <script>
         let socket;
         let isConnected = false;
-
+        let reconnectAttempts = 0;
+        let reconnectTimeout = null;
+        let manualDisconnect = false;
+        
         function toggleConnection() {
             if (isConnected) {
-                disconnectWebSocket();
+                disconnect(true); // true indicates manual disconnect
             } else {
-                connectWebSocket();
+                manualDisconnect = false; // Reset manual disconnect flag
+                connect();
             }
         }
-
-        function connectWebSocket() {
+        
+        function connect() {
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
             
@@ -71,38 +187,131 @@
             
             socket.onopen = function() {
                 isConnected = true;
-                document.getElementById('status').innerText = 'Connected';
-                document.getElementById('ws-button').innerText = 'Disconnect';
-                document.getElementById('ws-button').classList.add('disconnect');
+                reconnectAttempts = 0; // Reset reconnect attempts on successful connection
+                document.getElementById('connection-status').textContent = 'Connected';
+                document.getElementById('ws-button').textContent = 'Disconnect';
+                document.getElementById('ws-button').className = 'disconnect';
+                console.log('WebSocket connection established');
             };
             
             socket.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                if (data.counter !== undefined) {
-                    document.getElementById('counter').innerText = `Counter: ${data.counter}`;
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'telemetry') {
+                        updateTelemetry(data.data);
+                    } else if (data.type === 'log') {
+                        updateLog(data.data);
+                    }
+                } catch (e) {
+                    console.error('Error parsing message:', e, event.data);
                 }
             };
             
             socket.onclose = function() {
-                disconnectWebSocket();
+                isConnected = false;
+                document.getElementById('connection-status').textContent = 'Disconnected';
+                document.getElementById('ws-button').textContent = 'Connect';
+                document.getElementById('ws-button').className = '';
+                console.log('WebSocket connection closed');
+                
+                // Only auto-reconnect if not manually disconnected
+                if (!manualDisconnect && reconnectAttempts < 5) {
+                    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                    document.getElementById('connection-status').textContent = `Reconnecting in ${delay/1000}s...`;
+                    clearTimeout(reconnectTimeout);
+                    reconnectTimeout = setTimeout(function() {
+                        reconnectAttempts++;
+                        connect();
+                    }, delay);
+                }
             };
             
             socket.onerror = function(error) {
-                console.error('WebSocket Error:', error);
-                disconnectWebSocket();
+                console.error('WebSocket error:', error);
             };
         }
         
-        function disconnectWebSocket() {
+        function disconnect(manual = false) {
             if (socket) {
+                manualDisconnect = manual; // Set the manual disconnect flag
                 socket.close();
+                clearTimeout(reconnectTimeout); // Clear any pending reconnection
+                reconnectAttempts = 0; // Reset reconnect attempts
+                
+                if (manual) {
+                    document.getElementById('connection-status').textContent = 'Manually Disconnected';
+                }
             }
-            isConnected = false;
-            document.getElementById('status').innerText = 'Disconnected';
-            document.getElementById('ws-button').innerText = 'Connect';
-            document.getElementById('ws-button').classList.remove('disconnect');
-            document.getElementById('counter').innerText = 'Waiting for connection...';
         }
+        
+        function updateTelemetry(data) {
+            // Update orientation data
+            document.getElementById('orientation').textContent = 
+                `[${data.q[0].toFixed(2)}, ${data.q[1].toFixed(2)}, ${data.q[2].toFixed(2)}, ${data.q[3].toFixed(2)}]`;
+            
+            // Update angles
+            document.getElementById('pitch').textContent = data.pitch.toFixed(2);
+            document.getElementById('roll').textContent = data.roll.toFixed(2);
+            document.getElementById('yaw').textContent = data.yaw.toFixed(2);
+            
+            // Update motor outputs
+            document.getElementById('motors').textContent = 
+                `M1: ${data.m1.toFixed(2)}, M2: ${data.m2.toFixed(2)}`;
+                
+            // Update status
+            const statusLabels = ["IDLE", "RUNNING", "ERROR", "CALIBRATING"];
+            document.getElementById('status').textContent = statusLabels[data.status] || "UNKNOWN";
+            
+            // Simple visualization
+            updateVisualization(data);
+        }
+        
+        function updateLog(data) {
+            const errorMessage = document.getElementById('error-message');
+            // Format: [LEVEL] [timestamp] source: message\n
+            const timestamp = new Date(data.timestamp).toLocaleTimeString();
+            const logLine = `[${data.level}] [${timestamp}] ${data.source}: ${data.message}\n`;
+            if (errorMessage.textContent === 'No errors reported') {
+                errorMessage.textContent = logLine;
+            } else {
+                errorMessage.textContent += logLine;
+            }
+        }
+        
+        function updateVisualization(data) {
+            // Get the position indicator element
+            const indicator = document.getElementById('position-indicator');
+            const container = document.getElementById('visualization');
+            
+            // Get container dimensions
+            const width = container.offsetWidth;
+            const height = container.offsetHeight;
+            
+            // Map pitch from -90 to +90 degrees to Y position (top to bottom)
+            // Pitch is clamped between -90 and 90 degrees
+            const pitchDegrees = Math.max(-90, Math.min(90, data.pitch));
+            const pitchPosition = height * (0.5 - (pitchDegrees / 180)); // Map to y position
+            
+            // Map yaw from -180 to +180 degrees to X position (left to right)
+            // Make sure yaw is between -180 and 180
+            let yawDegrees = data.yaw;
+            while (yawDegrees > 180) yawDegrees -= 360;
+            while (yawDegrees < -180) yawDegrees += 360;
+            const yawPosition = width * ((yawDegrees + 180) / 360); // Map to x position
+            
+            // Update the indicator position
+            indicator.style.left = yawPosition + 'px';
+            indicator.style.top = pitchPosition + 'px';
+            
+            // Optional: Add a tooltip with exact values
+            indicator.title = `Pitch: ${data.pitch.toFixed(1)}°, Yaw: ${yawDegrees.toFixed(1)}°`;
+        }
+        
+        // Auto-connect on page load
+        window.onload = function() {
+            manualDisconnect = false; // Reset the flag on page load
+            connect();
+        };
     </script>
 </body>
 </html>
