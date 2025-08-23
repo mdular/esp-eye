@@ -125,6 +125,71 @@
             resize: vertical;
             display: block;
         }
+    /* Control panel styling */
+    .control-panel {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: 20px 0 10px 0;
+        padding: 12px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        background: #fafafa;
+    }
+    .control-panel section {
+        min-width: 200px;
+    }
+    .control-panel h3 {
+        margin: 0 0 6px 0;
+        font-size: 15px;
+    }
+    .control-panel label {
+        display: block;
+        font-size: 12px;
+        margin-top: 6px;
+    }
+    .control-panel input[type="number"] {
+        width: 100%;
+        padding: 4px 6px;
+        box-sizing: border-box;
+        font-size: 14px;
+    }
+    .inline-buttons {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-top: 6px;
+    }
+    .btn-danger {
+        background:#d32f2f;
+    }
+    .btn-danger:hover {
+        background:#b71c1c;
+    }
+    .btn-secondary {
+        background:#607d8b;
+    }
+    .btn-secondary:hover {
+        background:#546e7a;
+    }
+    .grow {
+        flex-grow:1;
+    }
+    .log-toolbar {
+        display:flex;
+        gap:8px;
+        margin-bottom:8px;
+        flex-wrap:wrap;
+    }
+    .log-toolbar input {
+        padding:4px 6px;
+        font-size:13px;
+    }
+    .muted {
+        color:#777;
+        font-size:11px;
+        margin-top:4px;
+    }
     </style>
 </head>
 <body>
@@ -133,6 +198,35 @@
     <div class="connection-status" id="connection-status">Disconnected</div>
     <button id="ws-button" onclick="toggleConnection()">Connect</button>
     
+    <div class="control-panel">
+        <section style="flex:1 1 220px">
+            <h3>Connection</h3>
+            <div class="inline-buttons">
+                <button onclick="sendEstop()" class="btn-danger">E-STOP</button>
+                <button onclick="toggleMotors()" id="motors-btn" class="btn-secondary">Motors: ?</button>
+            </div>
+            <div class="muted" id="motors-state-hint">Unknown motor state</div>
+        </section>
+        <section style="flex:1 1 220px">
+            <h3>Yaw Control</h3>
+            <label for="yaw-input">Yaw Setpoint (deg, -360..360)</label>
+            <input type="number" id="yaw-input" value="0" step="1" min="-360" max="360" />
+            <div class="inline-buttons">
+                <button onclick="applyYawSetpoint()">Set</button>
+                <button onclick="levelYaw()">Level</button>
+                <button onclick="pointYaw()">Point</button>
+            </div>
+            <div class="muted">Internally radians, validated ±2π</div>
+        </section>
+        <section style="flex:1 1 220px">
+            <h3>Schema / Debug</h3>
+            <div style="font-size:12px; line-height:1.3">
+                Uses compact telemetry t[]; commands v=1 JSON.<br/>
+                Errors returned as {"status":"error","err":"code"}.
+            </div>
+        </section>
+    </div>
+
     <h2>Telemetry Data</h2>
     
     <div class="data-display">
@@ -173,6 +267,58 @@
         let reconnectAttempts = 0;
         let reconnectTimeout = null;
         let manualDisconnect = false;
+
+        function sendCommand(obj) {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                console.warn("Socket not open, cannot send", obj);
+                return;
+            }
+            try {
+                socket.send(JSON.stringify(obj));
+            } catch (e) {
+                console.error("Send failed", e);
+            }
+        }
+
+        function sendEstop() {
+            sendCommand({v:1, cmd:"estop"});
+        }
+
+        function toggleMotors() {
+            // If state unknown, request enable
+            const enable = motorsEnabled === null ? 1 : (motorsEnabled ? 0 : 1);
+            sendCommand({v:1, cmd:"motors", motors: enable});
+        }
+
+        function applyYawSetpoint() {
+            const deg = parseFloat(document.getElementById("yaw-input").value);
+            if (isNaN(deg)) return;
+            const rad = deg * Math.PI / 180.0;
+            sendCommand({v:1, cmd:"set", yaw_sp: rad});
+        }
+
+        function levelYaw() {
+            sendCommand({v:1, cmd:"level"});
+        }
+
+        function pointYaw() {
+            // alias of apply for clarity
+            applyYawSetpoint();
+        }
+
+        function updateMotorsButton() {
+            const btn = document.getElementById("motors-btn");
+            const hint = document.getElementById("motors-state-hint");
+            if (motorsEnabled === null) {
+                btn.textContent = "Motors: ?";
+                hint.textContent = "Unknown motor state";
+                return;
+            }
+            btn.textContent = motorsEnabled ? "Motors: ON" : "Motors: OFF";
+            hint.textContent = motorsEnabled ? "Enabled" : "Disabled";
+            btn.className = motorsEnabled ? "btn-secondary" : "btn-secondary";
+        }
+        let motorsEnabled = null; // track last known state
 
         // Log message array and rendering logic
         let logMessages = [];
@@ -229,11 +375,12 @@
                 try {
                     const data = JSON.parse(event.data);
                     if (data.t) {
-                        // Telemetry: array order [q0,q1,q2,q3,pitch,roll,yaw,m1,m2,status]
+                        // Telemetry: array now [q0,q1,q2,q3,roll,pitch,yaw,m1,m2,status,seq,missed,lastHallUs]
                         updateTelemetry({
                             q: data.t.slice(0,4),
-                            pitch: data.t[4],
-                            roll: data.t[5],
+                            // NOTE: server order is roll,pitch in indices 4,5 (per websocket_srv.c comment)
+                            pitch: data.t[5],
+                            roll: data.t[4],
                             yaw: data.t[6],
                             m1: data.t[7],
                             m2: data.t[8],
@@ -246,6 +393,18 @@
                             timestamp: data.l[1],
                             source: data.l[2],
                             message: data.l[3]
+                        });
+                    } else if (data.status === "ok" && data.cmd === "motors") {
+                        motorsEnabled = !!data.enabled;
+                        updateMotorsButton();
+                    } else if (data.status === "ok" && (data.cmd === "set" || data.cmd === "point" || data.cmd === "level")) {
+                        // optionally could reflect yaw_sp echoed back
+                    } else if (data.status === "error") {
+                        updateLog({
+                            level: 'ERR',
+                            timestamp: Date.now(),
+                            source: 'ws',
+                            message: 'cmd error: ' + data.err
                         });
                     }
                 } catch (e) {

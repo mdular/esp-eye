@@ -92,13 +92,22 @@ static telemetry_data_t global_telemetry = {
 };
 
 // PID controllers (initialized in control_task)
-static pid_controller_t pid_roll;
+// Removed roll PID (mechanical system is 2-DOF: elevation=pitch, azimuth=yaw)
 static pid_controller_t pid_pitch;
+static pid_controller_t pid_yaw;  // yaw PID (uses unwrapped yaw accumulator)
 
 // Yaw zeroing offset (radians) set on hall index pulse
 static volatile float yaw_zero_offset = 0.0f;
 // Last raw yaw sample (radians) captured in imu_task for hall pulse alignment
 static volatile float last_yaw_sample = 0.0f;
+
+// Continuous unwrapped yaw accumulator (radians) reset on hall index pulse
+static volatile float yaw_unwrapped = 0.0f;
+static volatile float prev_yaw_raw = 0.0f;
+static volatile bool yaw_unwrap_initialized = false;
+
+// Yaw setpoint (radians) placeholder for future command integration
+static volatile float yaw_setpoint = 0.0f;
 
 // Task prototypes
 static void imu_task(void *pvParameters);
@@ -283,6 +292,20 @@ esp_err_t controller_emergency_stop(void) {
     return ESP_OK;
 }
 
+/**
+ * @brief Set yaw setpoint in radians (unwrapped frame).
+ */
+void controller_set_yaw_setpoint(float yaw_rad) {
+    yaw_setpoint = yaw_rad;
+}
+
+/**
+ * @brief Get current yaw setpoint in radians.
+ */
+float controller_get_yaw_setpoint(void) {
+    return yaw_setpoint;
+}
+
 // IMU task - samples IMU at 200Hz, runs Madgwick, publishes latest orientation
 static void imu_task(void *pvParameters) {
     (void)pvParameters;
@@ -322,6 +345,19 @@ static void imu_task(void *pvParameters) {
             float siny_cosp = 2.0f * (q0 * q3 + q1 * q2);
             float cosy_cosp = 1.0f - 2.0f * (q2 * q2 + q3 * q3);
             float yaw = atan2f(siny_cosp, cosy_cosp);
+
+            // Continuous yaw unwrapping (accumulator) independent of hall zeroing
+            if (!yaw_unwrap_initialized) {
+                prev_yaw_raw = yaw;
+                yaw_unwrapped = 0.0f;
+                yaw_unwrap_initialized = true;
+            } else {
+                float delta = yaw - prev_yaw_raw;
+                if (delta > M_PI)       delta -= 2.0f * M_PI;
+                else if (delta < -M_PI) delta += 2.0f * M_PI;
+                yaw_unwrapped += delta;
+                prev_yaw_raw = yaw;
+            }
 
             orientation_sample_t sample = {
                 .q = q,
@@ -368,8 +404,8 @@ static void control_task(void *pvParameters) {
     // Initialize PID controllers (provisional gains; to be tuned)
     static bool pid_inited = false;
     if (!pid_inited) {
-        pid_init(&pid_roll, 0.5f, 0.0f, 0.0f, 1.0f);
-        pid_init(&pid_pitch, 0.5f, 0.0f, 0.0f, 1.0f);
+        pid_init(&pid_pitch, 0.5f, 0.0f, 0.0f, 1.0f); // elevation
+        pid_init(&pid_yaw,   0.2f, 0.0f, 0.0f, 1.0f); // azimuth (placeholder gains)
         pid_inited = true;
     }
 
@@ -392,7 +428,8 @@ static void control_task(void *pvParameters) {
             if (hall_queue != NULL && xQueueReceive(hall_queue, &hall_event, 0) == pdTRUE) {
                 global_telemetry.last_hall_pulse_us = hall_event.timestamp;
                 float prev_offset = yaw_zero_offset;
-                yaw_zero_offset = last_yaw_sample; // zero yaw
+                yaw_zero_offset = last_yaw_sample; // zero yaw (raw frame)
+                yaw_unwrapped = 0.0f;              // reset accumulator relative to new index
                 hall_timeout_active = false; // reset timeout state
                 ESP_LOGI(TAG,
                          "Hall index @ %" PRIu64 " us -> yaw zeroed (prev offset=%.2f deg, new offset=%.2f deg)",
@@ -418,10 +455,23 @@ static void control_task(void *pvParameters) {
         }
 
         if (motors_enabled && have_sample) {
-            // Leveling setpoints = 0 rad
+            // Setpoints: pitch (elevation) -> 0 rad (level), yaw tracks yaw_setpoint (unwrapped frame)
+            float pitch_output = pid_update(&pid_pitch, 0.0f, sample.pitch);
+            float yaw_output   = pid_update(&pid_yaw,   yaw_setpoint, yaw_unwrapped);
+            float yaw_error = yaw_setpoint - yaw_unwrapped;
+
+            // Map axes to motors: motor0 = elevation, motor1 = azimuth
             float motor_commands[2];
-            motor_commands[0] = pid_update(&pid_roll, 0.0f, sample.roll);
-            motor_commands[1] = pid_update(&pid_pitch, 0.0f, sample.pitch);
+            motor_commands[0] = pitch_output;
+            motor_commands[1] = yaw_output;
+
+            // Periodic debug
+            static uint32_t yaw_log_counter = 0;
+            if (++yaw_log_counter >= 100) { // ~0.5s @200Hz
+                yaw_log_counter = 0;
+                ESP_LOGD(TAG, "PitchOut=%.3f Yaw sp=%.3f cur=%.3f err=%.3f out=%.3f",
+                         pitch_output, yaw_setpoint, yaw_unwrapped, yaw_error, yaw_output);
+            }
 
             // Detect saturation & clamp
             bool saturated = false;

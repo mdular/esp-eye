@@ -86,3 +86,7 @@ bool controller_get_motors_enabled(void);
  * Sets telemetry status to 2 (ESTOP) for UI diagnostics.
  */
 esp_err_t controller_emergency_stop(void);
+
+/* Yaw control (unwrapped frame) */
+void controller_set_yaw_setpoint(float yaw_rad);
+float controller_get_yaw_setpoint(void);

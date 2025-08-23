@@ -1,15 +1,16 @@
-// Diagnostic logging for websocket connection stability
-#include "esp_log.h"
-static const char *DIAG_TAG = "websocket_diag";
-#include "wifi_connect.h"
-#include <stdarg.h>
-#include <string.h>
-#include <stdio.h>
-#include <errno.h>
-#include <inttypes.h>
-#include "esp_log.h"
-#include "esp_http_server.h"
-#include "freertos/FreeRTOS.h"
+  // Diagnostic logging for websocket connection stability
+ #include "esp_log.h"
+ static const char *DIAG_TAG = "websocket_diag";
+ #include "wifi_connect.h"
+ #include <stdarg.h>
+ #include <string.h>
+ #include <stdio.h>
+ #include <errno.h>
+ #include <inttypes.h>
+ #include <stdlib.h>
+ #include <math.h>   // for isfinite used in command validation
+ #include "esp_http_server.h"
+ #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "esp_spiffs.h"
@@ -37,6 +38,50 @@ static QueueHandle_t log_queue = NULL;
 // Forward declaration for custom log vprintf
 static int websocket_log_vprintf(const char *fmt, va_list args);
 #endif
+
+/* Utility extractors for lightweight JSON-ish command parsing (no cJSON) */
+static int ws_extract_int(const char *buf, const char *key, int *out) {
+    const char *p = strstr(buf, key);
+    if (!p) return 0;
+    p = strchr(p, ':');
+    if (!p) return 0;
+    p++;
+    while (*p==' '||*p=='\t') p++;
+    char *endptr = NULL;
+    long v = strtol(p, &endptr, 10);
+    if (endptr == p) return 0;
+    *out = (int)v;
+    return 1;
+}
+static int ws_extract_float(const char *buf, const char *key, float *out) {
+    const char *p = strstr(buf, key);
+    if (!p) return 0;
+    p = strchr(p, ':');
+    if (!p) return 0;
+    p++;
+    while (*p==' '||*p=='\t') p++;
+    char *endptr = NULL;
+    double v = strtod(p, &endptr);
+    if (endptr == p) return 0;
+    *out = (float)v;
+    return 1;
+}
+static int ws_extract_cmd_token(const char *buf, char *out, size_t out_sz) {
+    const char *p = strstr(buf, "\"cmd\"");
+    if (!p) return 0;
+    p = strchr(p, ':');
+    if (!p) return 0;
+    p++;
+    while (*p==' '||*p=='\t') p++;
+    if (*p != '\"') return 0;
+    p++;
+    size_t i=0;
+    while (*p && *p!='\"' && i < out_sz-1) {
+        out[i++] = *p++;
+    }
+    out[i] = 0;
+    return i>0;
+}
 
 /**
  * @brief Add a new client to the list
@@ -276,58 +321,168 @@ static esp_err_t ws_handler(httpd_req_t *req) {
         ESP_LOGW(TAG, "Received binary/corrupted WebSocket data (%d bytes)", (int)ws_pkt.len);
     }
     
-    // Lightweight command parsing (no cJSON to minimize flash / heap)
-    // Accepted minimal forms (whitespace-insensitive):
-    // {"cmd":"estop"}
-    // {"estop":true}
-    // {"cmd":"toggle","motors":1}  (enable motors)
-    // {"cmd":"toggle","motors":0}  (disable motors)
-    //
-    // Future schema extension: level, point, calib...
-    bool estop = false;
-    bool toggle_motors_present = false;
-    bool toggle_motors_value = false;
+    // Extended versioned command schema (no cJSON). Supported examples:
+    // {"v":1,"cmd":"set","yaw_sp":1.5708}
+    // {"v":1,"cmd":"motors","motors":1}
+    // {"v":1,"cmd":"estop"}
+    // {"v":1,"cmd":"level"}              // sets yaw_sp=0
+    // {"v":1,"cmd":"point","yaw_sp":-0.7}
+    // {"v":1,"cmd":"calib","op":"hall_zero"}  // unsupported -> error
+    // Fields:
+     //   v (required)        : schema version
+     //   cmd (required)      : set|motors|estop|level|point|calib
+     //   motors (optional)   : 0/1
+     //   estop (optional)    : 0/1
+     //   yaw_sp (optional)   : float radians (validated)
+     //   op (for calib)      : operation keyword (future)
+#ifndef WS_CMD_SCHEMA_VERSION
+#define WS_CMD_SCHEMA_VERSION 1
+#endif
+#ifndef YAW_SETPOINT_ABS_MAX
+#define YAW_SETPOINT_ABS_MAX 6.283f
+#endif
 
     const char *text = (const char*)payload;
 
-    if (strstr(text, "\"estop\"") != NULL) {
-        // Could be {"cmd":"estop"} or {"estop":true}
-        if (strstr(text, "\"cmd\"") && strstr(text, "\"estop\"")) {
-            estop = true;
-        } else if (strstr(text, "\"estop\":true") || strstr(text, "\"estop\":1")) {
+    bool schema_mode = (strstr(text, "\"v\"") && strstr(text, "\"cmd\""));
+    int version = -1;
+    bool version_ok = false;
+    bool estop = false;
+    bool motors_present = false;
+    bool motors_enable = false;
+    bool yaw_sp_present = false;
+    float yaw_sp_value = 0.0f;
+    char cmd_token[16] = {0};
+    char op_token[16]  = {0};
+
+    if (schema_mode) {
+        if (ws_extract_int(text, "\"v\"", &version)) {
+            version_ok = (version == WS_CMD_SCHEMA_VERSION);
+        }
+        ws_extract_cmd_token(text, cmd_token, sizeof(cmd_token));
+        int tmp;
+        if (ws_extract_int(text, "\"motors\"", &tmp)) {
+            motors_present = true;
+            motors_enable = (tmp != 0);
+        }
+        if (ws_extract_int(text, "\"estop\"", &tmp)) {
+            estop = (tmp != 0);
+        }
+        if (ws_extract_float(text, "\"yaw_sp\"", &yaw_sp_value)) {
+            yaw_sp_present = true;
+        }
+        // Extract calib op (simple)
+        const char *op_pos = strstr(text, "\"op\"");
+        if (op_pos) {
+            const char *c = strchr(op_pos, ':');
+            if (c) {
+                c++;
+                while (*c==' '||*c=='\t') c++;
+                if (*c=='\"') {
+                    c++;
+                    size_t i=0;
+                    while (*c && *c!='\"' && i < sizeof(op_token)-1) op_token[i++] = *c++;
+                    op_token[i] = 0;
+                }
+            }
+        }
+        if (strcmp(cmd_token, "estop") == 0) {
             estop = true;
         }
-    }
-    if (strstr(text, "\"motors\"")) {
-        const char *m = strstr(text, "\"motors\"");
-        if (m) {
-            const char *colon = strchr(m, ':');
-            if (colon) {
-                while (*++colon == ' '); // skip spaces
-                if (*colon == '1' || *colon == 't' || *colon == 'T') {
-                    toggle_motors_present = true;
-                    toggle_motors_value = true;
-                } else if (*colon == '0' || *colon == 'f' || *colon == 'F') {
-                    toggle_motors_present = true;
-                    toggle_motors_value = false;
+    } else {
+        // Legacy fallback (unchanged)
+        if (strstr(text, "\"estop\"")) {
+            if (strstr(text, "\"cmd\"") && strstr(text, "\"estop\"")) {
+                estop = true;
+            } else if (strstr(text, "\"estop\":true") || strstr(text, "\"estop\":1")) {
+                estop = true;
+            }
+        }
+        if (strstr(text, "\"motors\"")) {
+            const char *m = strstr(text, "\"motors\"");
+            if (m) {
+                const char *colon = strchr(m, ':');
+                if (colon) {
+                    while (*++colon == ' ');
+                    if (*colon == '1' || *colon == 't' || *colon == 'T') {
+                        motors_present = true;
+                        motors_enable = true;
+                    } else if (*colon == '0' || *colon == 'f' || *colon == 'F') {
+                        motors_present = true;
+                        motors_enable = false;
+                    }
                 }
             }
         }
     }
 
-    char response[128];
+    char response[256];
     esp_err_t action_result = ESP_OK;
+    const char *err_code = NULL;
 
-    if (estop) {
+    if (schema_mode && !version_ok) {
+        err_code = "bad_version";
+    }
+    if (!err_code && schema_mode && cmd_token[0] == 0) {
+        err_code = "missing_cmd";
+    }
+    if (!err_code && yaw_sp_present) {
+        if (!isfinite(yaw_sp_value) ||
+            yaw_sp_value < -YAW_SETPOINT_ABS_MAX ||
+            yaw_sp_value >  YAW_SETPOINT_ABS_MAX) {
+            err_code = "invalid_value";
+        }
+    }
+
+    if (!err_code && schema_mode) {
+        if (strcmp(cmd_token,"set")==0) {
+            /* combined field application */
+        } else if (strcmp(cmd_token,"motors")==0) {
+            if (!motors_present) err_code = "missing_field";
+        } else if (strcmp(cmd_token,"estop")==0) {
+            /* handled below */
+        } else if (strcmp(cmd_token,"level")==0) {
+            yaw_sp_present = true;
+            yaw_sp_value = 0.0f;
+        } else if (strcmp(cmd_token,"point")==0) {
+            if (!yaw_sp_present) err_code = "missing_field";
+        } else if (strcmp(cmd_token,"calib")==0) {
+            /* future calib operations not yet implemented */
+            err_code = "unsupported_cmd";
+        } else {
+            err_code = "unknown_cmd";
+        }
+    }
+
+    if (err_code) {
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"error\",\"err\":\"%s\"}", err_code);
+    } else if (estop) {
         action_result = controller_emergency_stop();
         snprintf(response, sizeof(response),
-                 "{\"status\":\"ok\",\"cmd\":\"estop\",\"result\":%d}", action_result == ESP_OK ? 1 : 0);
-        ESP_LOGW(TAG, "Web command: estop invoked");
-    } else if (toggle_motors_present) {
-        controller_set_motors_enabled(toggle_motors_value);
+                 "{\"status\":\"ok\",\"cmd\":\"estop\",\"result\":%d}",
+                 action_result == ESP_OK ? 1 : 0);
+        ESP_LOGW(TAG, "Web command: estop");
+    } else if (motors_present && (strcmp(cmd_token,"motors")==0 || strcmp(cmd_token,"set")==0)) {
+        controller_set_motors_enabled(motors_enable);
         snprintf(response, sizeof(response),
-                 "{\"status\":\"ok\",\"cmd\":\"motors\",\"enabled\":%d}", toggle_motors_value ? 1 : 0);
-        ESP_LOGI(TAG, "Web command: motors %s", toggle_motors_value ? "ENABLED" : "DISABLED");
+                 "{\"status\":\"ok\",\"cmd\":\"motors\",\"enabled\":%d}",
+                 motors_enable ? 1 : 0);
+        ESP_LOGI(TAG, "Web command: motors %s", motors_enable ? "ENABLED" : "DISABLED");
+    } else if (yaw_sp_present && (strcmp(cmd_token,"set")==0 ||
+                                  strcmp(cmd_token,"point")==0 ||
+                                  strcmp(cmd_token,"level")==0)) {
+        controller_set_yaw_setpoint(yaw_sp_value);
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"ok\",\"cmd\":\"%s\",\"yaw_sp\":%.4f}",
+                 cmd_token[0]?cmd_token:"set", yaw_sp_value);
+        ESP_LOGI(TAG, "Web command: %s yaw_sp=%.4f",
+                 cmd_token[0]?cmd_token:"set", yaw_sp_value);
+    } else if (!schema_mode && (motors_present || yaw_sp_present)) {
+        if (motors_present) controller_set_motors_enabled(motors_enable);
+        if (yaw_sp_present) controller_set_yaw_setpoint(yaw_sp_value);
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"ok\",\"legacy\":1}");
     } else {
         snprintf(response, sizeof(response),
                  "{\"status\":\"ok\",\"message\":\"noop\"}");
@@ -343,7 +498,7 @@ static esp_err_t ws_handler(httpd_req_t *req) {
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "WebSocket send failed: %d", ret);
     }
-    
+
     free(payload);
     return ESP_OK;
 }

@@ -1,46 +1,49 @@
 #pragma once
 
+#include <stdbool.h>
+
 /**
- * @brief PID controller structure
+ * Simple PID controller structure.
+ * Time step (dt) is assumed 1.0 per update call; tune gains accordingly or
+ * scale gains externally if using a fixed control period.
  */
 typedef struct {
-    float kp;             // Proportional gain
-    float ki;             // Integral gain
-    float kd;             // Derivative gain
-    float setpoint;       // Target value
-    float integral;       // Integral term
-    float prev_error;     // Previous error for derivative
-    float output_limit;   // Output limit
-    float dt;             // Time step in seconds
+    float kp;
+    float ki;
+    float kd;
+
+    float integral;
+    float prev_error;
+    float out_limit;   // Symmetric limit (+/-) for output and integral anti-windup
+
+    bool first;
 } pid_controller_t;
 
 /**
- * @brief Initialize a PID controller
- * 
- * @param pid Pointer to PID controller structure
- * @param kp Proportional gain
- * @param ki Integral gain
- * @param kd Derivative gain
- * @param output_limit Maximum output value (symmetrical +/-)
+ * Initialize PID controller.
+ *
+ * @param pid        Controller instance
+ * @param kp,ki,kd   Gains
+ * @param out_limit  Symmetric absolute output limit (also used for integral clamp). If <=0, no limiting.
  */
-void pid_init(pid_controller_t *pid, float kp, float ki, float kd, float output_limit);
+void pid_init(pid_controller_t *pid, float kp, float ki, float kd, float out_limit);
 
 /**
- * @brief Update PID controller with new measurement
- * 
- * @param pid Pointer to PID controller structure
- * @param setpoint Target value
- * @param measurement Current measured value
- * @return float Control output
+ * Update (retune) gains at runtime.
+ */
+void pid_set_gains(pid_controller_t *pid, float kp, float ki, float kd);
+
+/**
+ * Reset dynamic state (integral, prev_error).
+ */
+void pid_reset(pid_controller_t *pid);
+
+/**
+ * Compute control output.
+ *
+ * @param pid       Controller
+ * @param setpoint  Desired value
+ * @param measurement Current value
+ * @return control output (clamped if out_limit>0)
  */
 float pid_update(pid_controller_t *pid, float setpoint, float measurement);
-
-/**
- * @brief Set new PID parameters
- * 
- * @param pid Pointer to PID controller structure
- * @param kp New proportional gain
- * @param ki New integral gain
- * @param kd New derivative gain
- */
-void pid_set_parameters(pid_controller_t *pid, float kp, float ki, float kd);
