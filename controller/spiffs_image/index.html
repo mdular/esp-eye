@@ -120,6 +120,10 @@
             font-family: monospace;
             white-space: pre-wrap;
             word-break: break-word;
+            max-height: 18em; /* ~15 lines */
+            overflow-y: auto;
+            resize: vertical;
+            display: block;
         }
     </style>
 </head>
@@ -169,7 +173,34 @@
         let reconnectAttempts = 0;
         let reconnectTimeout = null;
         let manualDisconnect = false;
-        
+
+        // Log message array and rendering logic
+        let logMessages = [];
+
+        function renderLogMessages() {
+            const errorMessage = document.getElementById('error-message');
+            if (logMessages.length === 0) {
+                errorMessage.textContent = 'No errors reported';
+                return;
+            }
+            // Clear previous content
+            errorMessage.innerHTML = '';
+            // Render each log line as a <div>
+            logMessages.forEach(line => {
+                const div = document.createElement('div');
+                div.textContent = line;
+                errorMessage.appendChild(div);
+            });
+        }
+
+        // Trim log messages every minute to keep only the latest 100
+        setInterval(() => {
+            if (logMessages.length > 100) {
+                logMessages = logMessages.slice(-100);
+                renderLogMessages();
+            }
+        }, 60000);
+
         function toggleConnection() {
             if (isConnected) {
                 disconnect(true); // true indicates manual disconnect
@@ -178,13 +209,13 @@
                 connect();
             }
         }
-        
+
         function connect() {
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-            
+
             socket = new WebSocket(wsUrl);
-            
+
             socket.onopen = function() {
                 isConnected = true;
                 reconnectAttempts = 0; // Reset reconnect attempts on successful connection
@@ -193,27 +224,42 @@
                 document.getElementById('ws-button').className = 'disconnect';
                 console.log('WebSocket connection established');
             };
-            
+
             socket.onmessage = function(event) {
                 try {
                     const data = JSON.parse(event.data);
-                    if (data.type === 'telemetry') {
-                        updateTelemetry(data.data);
-                    } else if (data.type === 'log') {
-                        updateLog(data.data);
+                    if (data.t) {
+                        // Telemetry: array order [q0,q1,q2,q3,pitch,roll,yaw,m1,m2,status]
+                        updateTelemetry({
+                            q: data.t.slice(0,4),
+                            pitch: data.t[4],
+                            roll: data.t[5],
+                            yaw: data.t[6],
+                            m1: data.t[7],
+                            m2: data.t[8],
+                            status: data.t[9]
+                        });
+                    } else if (data.l) {
+                        // Log: array order [level,timestamp,source,message]
+                        updateLog({
+                            level: data.l[0],
+                            timestamp: data.l[1],
+                            source: data.l[2],
+                            message: data.l[3]
+                        });
                     }
                 } catch (e) {
                     console.error('Error parsing message:', e, event.data);
                 }
             };
-            
+
             socket.onclose = function() {
                 isConnected = false;
                 document.getElementById('connection-status').textContent = 'Disconnected';
                 document.getElementById('ws-button').textContent = 'Connect';
                 document.getElementById('ws-button').className = '';
                 console.log('WebSocket connection closed');
-                
+
                 // Only auto-reconnect if not manually disconnected
                 if (!manualDisconnect && reconnectAttempts < 5) {
                     const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
@@ -225,88 +271,88 @@
                     }, delay);
                 }
             };
-            
+
             socket.onerror = function(error) {
                 console.error('WebSocket error:', error);
             };
         }
-        
+
         function disconnect(manual = false) {
             if (socket) {
                 manualDisconnect = manual; // Set the manual disconnect flag
                 socket.close();
                 clearTimeout(reconnectTimeout); // Clear any pending reconnection
                 reconnectAttempts = 0; // Reset reconnect attempts
-                
+
                 if (manual) {
                     document.getElementById('connection-status').textContent = 'Manually Disconnected';
                 }
             }
         }
-        
+
         function updateTelemetry(data) {
             // Update orientation data
-            document.getElementById('orientation').textContent = 
+            document.getElementById('orientation').textContent =
                 `[${data.q[0].toFixed(2)}, ${data.q[1].toFixed(2)}, ${data.q[2].toFixed(2)}, ${data.q[3].toFixed(2)}]`;
-            
+
             // Update angles
             document.getElementById('pitch').textContent = data.pitch.toFixed(2);
             document.getElementById('roll').textContent = data.roll.toFixed(2);
             document.getElementById('yaw').textContent = data.yaw.toFixed(2);
-            
+
             // Update motor outputs
-            document.getElementById('motors').textContent = 
+            document.getElementById('motors').textContent =
                 `M1: ${data.m1.toFixed(2)}, M2: ${data.m2.toFixed(2)}`;
-                
+
             // Update status
             const statusLabels = ["IDLE", "RUNNING", "ERROR", "CALIBRATING"];
             document.getElementById('status').textContent = statusLabels[data.status] || "UNKNOWN";
-            
+
             // Simple visualization
             updateVisualization(data);
         }
-        
+
         function updateLog(data) {
-            const errorMessage = document.getElementById('error-message');
-            // Format: [LEVEL] [timestamp] source: message\n
+            // Format: [LEVEL] [timestamp] source: message
             const timestamp = new Date(data.timestamp).toLocaleTimeString();
-            const logLine = `[${data.level}] [${timestamp}] ${data.source}: ${data.message}\n`;
-            if (errorMessage.textContent === 'No errors reported') {
-                errorMessage.textContent = logLine;
-            } else {
-                errorMessage.textContent += logLine;
+            const logLine = `[${data.level}] [${timestamp}] ${data.source}: ${data.message}`;
+            logMessages.push(logLine);
+            // If over 100, trim immediately
+            if (logMessages.length > 100) {
+                logMessages = logMessages.slice(-100);
             }
+            renderLogMessages();
         }
-        
+
         function updateVisualization(data) {
             // Get the position indicator element
             const indicator = document.getElementById('position-indicator');
             const container = document.getElementById('visualization');
-            
+
             // Get container dimensions
             const width = container.offsetWidth;
             const height = container.offsetHeight;
-            
+
             // Map pitch from -90 to +90 degrees to Y position (top to bottom)
             // Pitch is clamped between -90 and 90 degrees
             const pitchDegrees = Math.max(-90, Math.min(90, data.pitch));
             const pitchPosition = height * (0.5 - (pitchDegrees / 180)); // Map to y position
-            
+
             // Map yaw from -180 to +180 degrees to X position (left to right)
             // Make sure yaw is between -180 and 180
             let yawDegrees = data.yaw;
             while (yawDegrees > 180) yawDegrees -= 360;
             while (yawDegrees < -180) yawDegrees += 360;
             const yawPosition = width * ((yawDegrees + 180) / 360); // Map to x position
-            
+
             // Update the indicator position
             indicator.style.left = yawPosition + 'px';
             indicator.style.top = pitchPosition + 'px';
-            
+
             // Optional: Add a tooltip with exact values
             indicator.title = `Pitch: ${data.pitch.toFixed(1)}°, Yaw: ${yawDegrees.toFixed(1)}°`;
         }
-        
+
         // Auto-connect on page load
         window.onload = function() {
             manualDisconnect = false; // Reset the flag on page load
