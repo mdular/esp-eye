@@ -22,9 +22,14 @@
 #define MAX_WS_CLIENTS 4
 #define WEB_TASK_STACK_SIZE 6144
 #define WEB_TASK_PRIORITY 3
-#define TELEMETRY_INTERVAL_MS 200  // 5Hz telemetry rate
+#define TELEMETRY_INTERVAL_MS 500  // 2Hz telemetry rate
 #define CLIENT_PRUNE_INTERVAL_MS 5000  // Check for stale clients every 5 seconds
 #define WS_LOG_MIN_LEVEL LOG_LEVEL_WARNING
+
+/* Optional active liveness pings (disabled while investigating mask errors) */
+#ifndef WS_ENABLE_PINGS
+#define WS_ENABLE_PINGS 0
+#endif
 
 static const char *TAG = "websocket_srv";
 static httpd_handle_t server = NULL;
@@ -126,18 +131,23 @@ static void check_and_remove_stale_clients(void) {
     int removed = 0;
     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
         if (client_fds[i] != 0) {
-            // Create a dummy packet to check if client is still connected
+            int ret = ESP_OK;
+#if WS_ENABLE_PINGS
+            // Active liveness check with control PING (can trigger mask warnings on some stacks)
             char dummy = 0;
-            int ret = httpd_ws_send_frame_async(server, client_fds[i], &(httpd_ws_frame_t){
+            ret = httpd_ws_send_frame_async(server, client_fds[i], &(httpd_ws_frame_t){
                 .final = true,
                 .fragmented = false,
                 .type = HTTPD_WS_TYPE_PING,
                 .payload = (uint8_t*)&dummy,
                 .len = 0
             });
-            
+#else
+            // Passive mode: rely on normal async send failures (telemetry / responses) to prune.
+            // No action here to avoid extra control frames provoking mask errors.
+#endif
             if (ret != ESP_OK) {
-                ESP_LOGD(TAG, "Client %d (fd=%d) ping failed, removing", i, client_fds[i]);
+                ESP_LOGD(TAG, "Client %d (fd=%d) liveness check failed, removing", i, client_fds[i]);
                 client_fds[i] = 0;
                 client_count--;
                 removed++;
@@ -202,7 +212,8 @@ static esp_err_t ws_handler(httpd_req_t *req) {
             ESP_LOGW(TAG, "WebSocket frame issue (err: %d, type: %d), client might be disconnecting", 
                     ret, ws_pkt.type);
             
-            // Check if client is still connected before removing
+            // After header receive error attempt soft verification (optional)
+#if WS_ENABLE_PINGS
             char dummy = 0;
             esp_err_t ping_ret = httpd_ws_send_frame_async(server, sock, &(httpd_ws_frame_t){
                 .final = true,
@@ -211,11 +222,13 @@ static esp_err_t ws_handler(httpd_req_t *req) {
                 .payload = (uint8_t*)&dummy,
                 .len = 0
             });
-            
             if (ping_ret != ESP_OK) {
                 ESP_LOGI(TAG, "Client ping failed after frame error, removing client");
                 remove_client(sock);
             }
+#else
+            ESP_LOGD(TAG, "Skipping ping after frame header error (pings disabled)");
+#endif
             return ESP_OK;  // Don't propagate the error
         }
         
@@ -227,13 +240,12 @@ static esp_err_t ws_handler(httpd_req_t *req) {
         return ESP_OK;  // Return OK to prevent the httpd server from closing the socket
     }
     
-    // Check frame type
+    // Check frame type (handle continuation frames explicitly)
     if (ws_pkt.type == HTTPD_WS_TYPE_CLOSE) {
         ESP_LOGI(TAG, "Received WebSocket close frame");
         remove_client(sock);
         return ESP_OK;
     } else if (ws_pkt.type == HTTPD_WS_TYPE_PING) {
-        // Respond to ping with pong
         httpd_ws_frame_t pong_frame;
         memset(&pong_frame, 0, sizeof(httpd_ws_frame_t));
         pong_frame.type = HTTPD_WS_TYPE_PONG;
@@ -247,9 +259,12 @@ static esp_err_t ws_handler(httpd_req_t *req) {
         return ESP_OK;
     } else if (ws_pkt.type == HTTPD_WS_TYPE_BINARY) {
         ESP_LOGW(TAG, "Binary WebSocket frame received (%d bytes), not supported", (int)ws_pkt.len);
-        return ESP_OK;  // Acknowledge but don't process binary frames
+        return ESP_OK;
+    } else if (ws_pkt.type == HTTPD_WS_TYPE_CONTINUE) {
+        ESP_LOGD(TAG, "Continuation frame ignored");
+        return ESP_OK;
     } else if (ws_pkt.type != HTTPD_WS_TYPE_TEXT) {
-        ESP_LOGW(TAG, "Unknown WebSocket frame type: %d", ws_pkt.type);
+        ESP_LOGW(TAG, "Unknown WebSocket frame type (opcode=%d)", ws_pkt.type);
         return ESP_OK;
     }
     
@@ -280,10 +295,10 @@ static esp_err_t ws_handler(httpd_req_t *req) {
         ESP_LOGD(DIAG_TAG, "Payload receive error: ret=%d, type=%d, len=%d", ret, ws_pkt.type, ws_pkt.len);
         free(payload);
 
+#if WS_ENABLE_PINGS
         // Diagnostic: log before ping on payload error
         ESP_LOGD(DIAG_TAG, "Sending ping to client after payload error, sock=%d", sock);
 
-        // Check if client is still connected before removing
         char dummy = 0;
         esp_err_t ping_ret = httpd_ws_send_frame_async(server, sock, &(httpd_ws_frame_t){
             .final = true,
@@ -293,13 +308,15 @@ static esp_err_t ws_handler(httpd_req_t *req) {
             .len = 0
         });
 
-        // Diagnostic: log after ping attempt
         ESP_LOGD(DIAG_TAG, "Ping after payload error returned %d", ping_ret);
 
         if (ping_ret != ESP_OK) {
             ESP_LOGI(TAG, "Client ping failed after payload error, removing client");
             remove_client(sock);
         }
+#else
+        ESP_LOGD(DIAG_TAG, "Pings disabled; relying on future send failures to prune client sock=%d", sock);
+#endif
         return ESP_OK;  // Don't propagate the error
     }
     
@@ -325,16 +342,17 @@ static esp_err_t ws_handler(httpd_req_t *req) {
     // {"v":1,"cmd":"set","yaw_sp":1.5708}
     // {"v":1,"cmd":"motors","motors":1}
     // {"v":1,"cmd":"estop"}
-    // {"v":1,"cmd":"level"}              // sets yaw_sp=0
+    // {"v":1,"cmd":"level"}                   // sets yaw_sp=0
     // {"v":1,"cmd":"point","yaw_sp":-0.7}
-    // {"v":1,"cmd":"calib","op":"hall_zero"}  // unsupported -> error
+    // {"v":1,"cmd":"calib","op":"hall_zero"}  // performs synthetic hall zero calibration
+    // {"v":1,"cmd":"calib"}                   // -> error (missing_field)
     // Fields:
-     //   v (required)        : schema version
-     //   cmd (required)      : set|motors|estop|level|point|calib
-     //   motors (optional)   : 0/1
-     //   estop (optional)    : 0/1
-     //   yaw_sp (optional)   : float radians (validated)
-     //   op (for calib)      : operation keyword (future)
+    //   v (required)        : schema version
+    //   cmd (required)      : set|motors|estop|level|point|calib
+    //   motors (optional)   : 0/1
+    //   estop (optional)    : 0/1
+    //   yaw_sp (optional)   : float radians (validated)
+    //   op (for calib)      : operation keyword (currently: "hall_zero")
 #ifndef WS_CMD_SCHEMA_VERSION
 #define WS_CMD_SCHEMA_VERSION 1
 #endif
@@ -447,8 +465,13 @@ static esp_err_t ws_handler(httpd_req_t *req) {
         } else if (strcmp(cmd_token,"point")==0) {
             if (!yaw_sp_present) err_code = "missing_field";
         } else if (strcmp(cmd_token,"calib")==0) {
-            /* future calib operations not yet implemented */
-            err_code = "unsupported_cmd";
+            if (op_token[0] == 0) {
+                err_code = "missing_field"; // need op
+            } else if (strcmp(op_token,"hall_zero")==0) {
+                /* supported */
+            } else {
+                err_code = "invalid_value";
+            }
         } else {
             err_code = "unknown_cmd";
         }
@@ -478,6 +501,13 @@ static esp_err_t ws_handler(httpd_req_t *req) {
                  cmd_token[0]?cmd_token:"set", yaw_sp_value);
         ESP_LOGI(TAG, "Web command: %s yaw_sp=%.4f",
                  cmd_token[0]?cmd_token:"set", yaw_sp_value);
+    } else if (strcmp(cmd_token,"calib")==0) {
+        action_result = controller_calibrate_hall_zero_now();
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"ok\",\"cmd\":\"calib\",\"op\":\"%s\",\"result\":%d}",
+                 op_token[0]?op_token:"?", action_result == ESP_OK ? 1 : 0);
+        ESP_LOGI(TAG, "Web command: calib op=%s result=%d",
+                 op_token[0]?op_token:"?", action_result == ESP_OK);
     } else if (!schema_mode && (motors_present || yaw_sp_present)) {
         if (motors_present) controller_set_motors_enabled(motors_enable);
         if (yaw_sp_present) controller_set_yaw_setpoint(yaw_sp_value);
