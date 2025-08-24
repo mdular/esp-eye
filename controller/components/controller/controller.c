@@ -15,6 +15,30 @@
 
 static const char *TAG = "controller";
 
+/* PID tuning constants (initial pass)
+ * Elevation (pitch) axis generally faster mechanical response than yaw; provide modest derivative damping.
+ * Further tuning: adjust KP upward until slight overshoot, then add KD to damp; introduce KI only if steady-state bias observed.
+ */
+#ifndef PID_PITCH_KP
+#define PID_PITCH_KP 0.80f
+#endif
+#ifndef PID_PITCH_KI
+#define PID_PITCH_KI 0.00f
+#endif
+#ifndef PID_PITCH_KD
+#define PID_PITCH_KD 0.05f
+#endif
+
+#ifndef PID_YAW_KP
+#define PID_YAW_KP   0.40f
+#endif
+#ifndef PID_YAW_KI
+#define PID_YAW_KI   0.00f
+#endif
+#ifndef PID_YAW_KD
+#define PID_YAW_KD   0.02f
+#endif
+
 // Angle normalization helper (-pi, pi]
 static inline float normalize_angle(float a) {
     while (a > M_PI)  a -= 2.0f * M_PI;
@@ -306,6 +330,27 @@ float controller_get_yaw_setpoint(void) {
     return yaw_setpoint;
 }
 
+/**
+ * @brief Calibrate (zero) yaw immediately (synthetic hall index).
+ *
+ * Sets yaw_zero_offset to last_yaw_sample (raw frame) and clears the
+ * unwrapped accumulator so subsequent yaw_unwrapped is relative to the
+ * new reference.
+ */
+esp_err_t controller_calibrate_hall_zero_now(void) {
+    float prev = yaw_zero_offset;
+    yaw_zero_offset = last_yaw_sample;
+    yaw_unwrapped = 0.0f;
+    telemetry_data_t t;
+    controller_get_telemetry(&t);
+    // Optionally mark status=3 (CALIBRATING) briefly; keep existing status for now.
+    controller_update_telemetry(&t);
+    ESP_LOGI(TAG, "Calibration hall_zero synthetic: prev=%.2f deg new=%.2f deg",
+             prev * 180.0f / M_PI,
+             yaw_zero_offset * 180.0f / M_PI);
+    return ESP_OK;
+}
+
 // IMU task - samples IMU at 200Hz, runs Madgwick, publishes latest orientation
 static void imu_task(void *pvParameters) {
     (void)pvParameters;
@@ -404,9 +449,12 @@ static void control_task(void *pvParameters) {
     // Initialize PID controllers (provisional gains; to be tuned)
     static bool pid_inited = false;
     if (!pid_inited) {
-        pid_init(&pid_pitch, 0.5f, 0.0f, 0.0f, 1.0f); // elevation
-        pid_init(&pid_yaw,   0.2f, 0.0f, 0.0f, 1.0f); // azimuth (placeholder gains)
+        pid_init(&pid_pitch, PID_PITCH_KP, PID_PITCH_KI, PID_PITCH_KD, 1.0f); // elevation tuned
+        pid_init(&pid_yaw,   PID_YAW_KP,   PID_YAW_KI,   PID_YAW_KD,   1.0f); // azimuth tuned
         pid_inited = true;
+        ESP_LOGI(TAG, "PID gains pitch(Kp=%.2f Ki=%.2f Kd=%.2f) yaw(Kp=%.2f Ki=%.2f Kd=%.2f)",
+                 PID_PITCH_KP, PID_PITCH_KI, PID_PITCH_KD,
+                 PID_YAW_KP, PID_YAW_KI, PID_YAW_KD);
     }
 
     // Hall timeout tracking

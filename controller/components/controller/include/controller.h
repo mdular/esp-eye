@@ -90,3 +90,13 @@ esp_err_t controller_emergency_stop(void);
 /* Yaw control (unwrapped frame) */
 void controller_set_yaw_setpoint(float yaw_rad);
 float controller_get_yaw_setpoint(void);
+
+/**
+ * @brief Calibrate (zero) yaw using current instantaneous raw yaw sample.
+ *
+ * Resets internal yaw zero offset to the most recently sampled yaw and
+ * clears the unwrapped accumulator, equivalent to a synthetic hall index pulse.
+ *
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t controller_calibrate_hall_zero_now(void);
